@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends
 
@@ -39,5 +39,5 @@ async def task_template_schema_by_name(
 async def task_template_schemas_list(
     body: Annotated[TaskTemplateSchemasListRequest, Body()],
     service: Annotated[TaskTemplateService, Depends(get_task_tpl_service)],
-) -> dict[str, dict[str, dict]]:
+) -> dict[str, dict[str, Any]]:
     return await service.get_schemas_by_names(body.names)

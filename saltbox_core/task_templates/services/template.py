@@ -222,6 +222,7 @@ class TaskTemplateService(
             if not await self.exists({'name': name}):
                 raise TaskTemplateNotFoundException(template_name=name)
         templates = await self.get_list({'name': {'$in': names}}, projection_model=TaskTemplateSchemasProjection)
+        logger.debug('Retrieved templates titles: %s', [template.title for template in templates])
         return {
             template.name: {
                 'title': template.title,
