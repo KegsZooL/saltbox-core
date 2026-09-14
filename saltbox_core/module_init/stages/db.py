@@ -12,7 +12,7 @@ async def run_migrations() -> None:
             ['saltbox_core', 'masters'],
             ['saltbox_core', 'minion_collections'],
             ['saltbox_core', 'pillars'],
-            ['saltbox_core', 'settings'],
+            ['saltbox_core', 'salt'],
             ['saltbox_core', 'task_templates'],
             ['saltbox_core', 'tasks'],
         ]
