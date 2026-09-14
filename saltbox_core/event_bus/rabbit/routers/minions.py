@@ -83,7 +83,7 @@ async def add_extra_data(  # noqa: C901
             for data_key, data_value in data_item.items():
                 if data_key in category.minion_fields:
                     minion_data_item[data_key] = data_value
-                elif data_key in category.category_fields:  # type: ignore
+                elif data_key in category.category_fields:
                     category_data_item[data_key] = data_value
                 else:
                     if category.extra_fields_policy == MinionExtraDataExtraFieldsPolicy.SAVE_TO_CATEGORY:

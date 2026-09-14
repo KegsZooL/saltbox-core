@@ -13,7 +13,14 @@ from saltbox_core.minion_collections.schemas.collection import (
     CollectionTreeNodeSchema,
     CollectionUpdateSchema,
 )
+from saltbox_core.minion_collections.schemas.extra_data import CollectionExtraDataListItemSchema
+from saltbox_core.minion_collections.schemas.extra_data_category import CollectionExtraDataListBody
 from saltbox_core.minion_collections.services.collection import CollectionService, get_collection_service
+from saltbox_core.minion_collections.services.extra_data_category import (
+    ExtraDataCategoryService,
+    get_extra_data_category_service,
+)
+from saltbox_core.minion_collections.services.minion import MinionService, get_minion_service
 from saltbox_core.tasks.schemas.task import TaskPolicyForCollectionSchema
 from saltbox_core.tasks.services.task import TaskService, get_task_service
 from saltbox_sdk.db.mongo.schemas_base import SortOrder
@@ -218,3 +225,41 @@ async def collection_delete(
 ) -> Response:
     await collection_service.delete_by_slug(slug)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    '/extra/data/list',
+    operation_id='minion_collections_extra_data_list',
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.collections.read',
+        action=CollectionActions.READ,
+    ).model_dump(by_alias=True),
+)
+async def collection_extra_data_list(
+    body: Annotated[CollectionExtraDataListBody, Body()],
+    collection_service: Annotated[CollectionService, Depends(get_collection_service)],
+    minion_service: Annotated[MinionService, Depends(get_minion_service)],
+    extra_data_category_service: Annotated[ExtraDataCategoryService, Depends(get_extra_data_category_service)],
+) -> PaginatedResponse[CollectionExtraDataListItemSchema]:
+    if body.collection_id is not None:
+        collection = await collection_service.get(query=body.collection_id)
+    else:
+        collection = await collection_service.get(query={'slug': body.collection_slug})
+
+    if body.category_id is not None:
+        category = await extra_data_category_service.get(query=body.category_id)
+    else:
+        category = await extra_data_category_service.get(
+            query={'source': body.category_source, 'name': body.category_name}
+        )
+
+    return await minion_service.get_paginated_grouped_extra_data_list(
+        group_by_fields=category.category_fields,
+        query=collection.full_query,
+        category_source=category.source,
+        category_name=category.name,
+        search_str=body.search,
+        limit=body.limit,
+        skip=body.skip,
+        sort=body.sort,
+    )

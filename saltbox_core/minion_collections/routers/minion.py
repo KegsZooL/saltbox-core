@@ -270,13 +270,21 @@ async def extra_category_list(
 async def extra_data_list(
     body: Annotated[ExtraDataListBody, Body()],
     minion_service: Annotated[MinionService, Depends(get_minion_service)],
+    extra_data_category_service: Annotated[ExtraDataCategoryService, Depends(get_extra_data_category_service)],
 ) -> PaginatedResponse[ExtraDataListItemSchema]:
     minion = await minion_service.get(query=body.minion_id, projection_model=MinionTgtOnlySchema)
 
+    if body.category_id is not None:
+        category = await extra_data_category_service.get(query=body.category_id)
+    else:
+        category = await extra_data_category_service.get(
+            query={'source': body.category_source, 'name': body.category_name}
+        )
+
     return await minion_service.get_paginated_extra_data_list(
         query={'minion_id': minion.minion_id, 'master': minion.master},
-        category_source=body.category_source,
-        category_name=body.category_name,
+        category_source=category.source,
+        category_name=category.name,
         search_str=body.search,
         limit=body.limit,
         skip=body.skip,

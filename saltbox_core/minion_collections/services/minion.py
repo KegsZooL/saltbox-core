@@ -9,7 +9,10 @@ from pymongo.asynchronous.client_session import AsyncClientSession as MongoAsync
 
 from saltbox_core.config import logger
 from saltbox_core.minion_collections.repositories.minion import MinionRepository, get_minion_repository
-from saltbox_core.minion_collections.schemas.extra_data import ExtraDataListItemSchema
+from saltbox_core.minion_collections.schemas.extra_data import (
+    CollectionExtraDataListItemSchema,
+    ExtraDataListItemSchema,
+)
 from saltbox_core.minion_collections.schemas.filter import UniqueGrainValuesResponse
 from saltbox_core.minion_collections.schemas.minion import (
     GrainsSchema,
@@ -143,6 +146,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         category_name: str | None = ...,
         search_str: str | None = ...,
         escape_search_str: bool = ...,
+        group_by_fields: list[str] | None = ...,
         count_only: Literal[True],
     ) -> list[dict[str, Any]]: ...
 
@@ -155,6 +159,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         category_name: str | None = ...,
         search_str: str | None = ...,
         escape_search_str: bool = ...,
+        group_by_fields: list[str] | None = ...,
         count_only: Literal[False] = False,
         limit: int = ...,
         skip: int = ...,
@@ -169,6 +174,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         category_name: str | None = None,
         search_str: str | None = None,
         escape_search_str: bool = True,
+        group_by_fields: list[str] | None = None,
         count_only: bool = False,
         limit: int = 0,
         skip: int = 0,
@@ -238,13 +244,39 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
                     }
                 },
                 {'$addFields': {'_static_items': outer_reduce}},
-                {'$project': {'_id': 0, 'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']}}},
+                {
+                    '$project': {
+                        '_id': 1 if group_by_fields else 0,
+                        'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']},
+                    }
+                },
                 {'$unwind': '$items'},
-                {'$replaceRoot': {'newRoot': '$items'}},
-                {'$group': {'_id': '$$ROOT'}},
-                {'$replaceRoot': {'newRoot': '$_id'}},
             ]
         )
+
+        if group_by_fields:
+            group_key: dict[str, Any] = {field: {'$ifNull': [f'$items.{field}', None]} for field in group_by_fields}
+            group_key['_source'] = '$items._source'
+            group_key['_name'] = '$items._name'
+
+            pipeline.extend(
+                [
+                    {'$group': {'_id': group_key, '_minions': {'$addToSet': '$_id'}}},
+                    {
+                        '$replaceRoot': {
+                            'newRoot': {'$mergeObjects': ['$_id', {'_minions_count': {'$size': '$_minions'}}]}
+                        }
+                    },
+                ]
+            )
+        else:
+            pipeline.extend(
+                [
+                    {'$replaceRoot': {'newRoot': '$items'}},
+                    {'$group': {'_id': '$$ROOT'}},
+                    {'$replaceRoot': {'newRoot': '$_id'}},
+                ]
+            )
 
         if search_str:
             kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
@@ -280,6 +312,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         category_name: str | None = None,
         search_str: str | None = None,
         escape_search_str: bool = True,
+        group_by_fields: list[str] | None = None,
         limit: int = 0,
         skip: int = 0,
         sort: dict[str, SortOrder] | None = None,
@@ -291,12 +324,13 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             category_name=category_name,
             search_str=search_str,
             escape_search_str=escape_search_str,
+            group_by_fields=group_by_fields,
             limit=limit,
             skip=skip,
             sort=sort,
         )
 
-        cursor = await self.repo.collection.aggregate(pipeline=pipeline, session=session)
+        cursor = await self.repo.collection.aggregate(pipeline=pipeline, session=session, allowDiskUse=True)
 
         return await cursor.to_list()
 
@@ -321,7 +355,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             count_only=True,
         )
 
-        total_cursor = await self.repo.collection.aggregate(pipeline=total_pipeline, session=session)
+        total_cursor = await self.repo.collection.aggregate(pipeline=total_pipeline, session=session, allowDiskUse=True)
         total_cursor_result = await total_cursor.to_list()
         total = total_cursor_result[0]['total'] if total_cursor_result else 0
 
@@ -338,6 +372,48 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         )
 
         return PaginatedResponse[ExtraDataListItemSchema](total=total, data=data)
+
+    async def get_paginated_grouped_extra_data_list(
+        self,
+        group_by_fields: list[str],
+        query: dict[str, Any] | None = None,
+        category_source: str | None = None,
+        category_name: str | None = None,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+        session: MongoAsyncClientSession | None = None,
+    ) -> PaginatedResponse[CollectionExtraDataListItemSchema]:
+        total_pipeline = self.build_extra_data_mongo_pipeline(
+            query=query,
+            category_source=category_source,
+            category_name=category_name,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            group_by_fields=group_by_fields,
+            count_only=True,
+        )
+
+        total_cursor = await self.repo.collection.aggregate(pipeline=total_pipeline, session=session, allowDiskUse=True)
+        total_cursor_result = await total_cursor.to_list()
+        total = total_cursor_result[0]['total'] if total_cursor_result else 0
+
+        data = await self.get_extra_data_list(
+            query=query,
+            category_source=category_source,
+            category_name=category_name,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            group_by_fields=group_by_fields,
+            limit=limit,
+            skip=skip,
+            sort=sort,
+            session=session,
+        )
+
+        return PaginatedResponse[CollectionExtraDataListItemSchema](total=total, data=data)
 
 
 def get_minion_service(

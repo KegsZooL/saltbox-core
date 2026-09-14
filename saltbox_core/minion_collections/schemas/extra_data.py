@@ -49,3 +49,11 @@ class ExtraDataListItemSchema(BaseModel):
     model_config = ConfigDict(
         extra='allow',
     )
+
+
+class CollectionExtraDataListItemSchema(ExtraDataListItemSchema):
+    minions_count: int = Field(
+        title='Minions count',
+        validation_alias='_minions_count',
+        serialization_alias='minions_count',
+    )
