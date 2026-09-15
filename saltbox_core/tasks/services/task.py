@@ -163,11 +163,6 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
         else:
             pillars = {}
 
-        if task_template and task_template.query:
-            target_query = {'$and': [task_template.query, data.query]} if data.query else task_template.query
-        else:
-            target_query = data.query
-
         return TaskCreateSchema.model_validate(
             {
                 'task_type': data.task_type,
@@ -179,7 +174,7 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
                 'arg': task_arg,
                 'kwarg': task_kwarg,
                 'target_collection_id': collection.id,
-                'target_query': target_query,
+                'target_query': data.query,
                 'batch_size': data.batch_size if data.batch_size is not None else task_defaults['batch_size'],
                 'max_retries': data.max_retries if data.max_retries is not None else task_defaults['max_retries'],
                 'retry_delay': data.retry_delay if data.retry_delay is not None else task_defaults['retry_delay'],
