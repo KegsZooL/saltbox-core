@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -14,8 +15,16 @@ from saltbox_core.config import SETTINGS, logger
 from saltbox_core.db.tiq_tasks import send_notify_by_mongo_service
 from saltbox_core.jobs.exceptions import JobCreateException, JobServiceException
 from saltbox_core.jobs.repositories.job_repository import JobRepository, get_job_repository
-from saltbox_core.jobs.schemas.job_return_schemas import JobReturnStatus
-from saltbox_core.jobs.schemas.job_schemas import JobCreateSchema, JobModel, JobSimpleSchema, JobStatus, JobUpdateSchema
+from saltbox_core.jobs.schemas.job_return_schemas import JobReturnStatus, JobReturnTgtOnlySchema
+from saltbox_core.jobs.schemas.job_schemas import (
+    JobCreateSchema,
+    JobForSetTtlSchema,
+    JobModel,
+    JobSetTtlResponse,
+    JobSimpleSchema,
+    JobStatus,
+    JobUpdateSchema,
+)
 from saltbox_core.jobs.services.job_return_service import JobReturnService, get_job_return_service
 from saltbox_core.masters.services.master_service import MasterService, get_master_service
 from saltbox_core.task_templates.services.template import TaskTemplateService, get_task_tpl_service
@@ -112,7 +121,63 @@ class JobService(MongoBaseWithNotifyService[JobRepository, JobModel, JobCreateSc
         except ObjectNotFoundException:
             logger.debug(f'Object "{self.repo.Meta.collection_name}" for notifying not found by query: {obj_id}')
 
-    async def __prepare_create_obj(  # noqa: C901
+    @staticmethod
+    def resolve_ttl(ttl: int | None, template_default_ttl: int | None) -> int:
+        if ttl == 0:
+            return SETTINGS.jobs_max_ttl
+
+        if ttl is not None:
+            return ttl
+
+        if template_default_ttl == 0:
+            return SETTINGS.jobs_max_ttl
+
+        if template_default_ttl is None:
+            return SETTINGS.jobs_default_ttl
+
+        return template_default_ttl
+
+    async def __set_job_ttl(self, job: JobForSetTtlSchema, ttl: int | None) -> int:
+        template_default_ttl: int | None = None
+
+        if job.template_id:
+            try:
+                template = await self.task_template_service.get({'_id': job.template_id})
+                template_default_ttl = template.defaults.ttl if template.defaults else None
+            except ObjectNotFoundException:
+                ...
+
+        resolved_ttl = self.resolve_ttl(ttl=ttl, template_default_ttl=template_default_ttl)
+
+        await self.update(query=job.id, data={'ttl': resolved_ttl})
+
+        return resolved_ttl
+
+    async def __set_returns_ttl(self, job_id: PyObjectId, ttl: int | None, minions: list[str]) -> list[str]:
+        updated_ids = await self.job_return_service.bulk_update(
+            query={'job_id': job_id, 'minion_id': {'$in': minions}}, data={'ttl': ttl}
+        )
+        updated_returns = await self.job_return_service.get_list(
+            query={'_id': {'$in': updated_ids}}, projection_model=JobReturnTgtOnlySchema
+        )
+
+        return [job_return.minion_id for job_return in updated_returns]
+
+    async def set_ttl(self, job_id: PyObjectId, ttl: int | None, minions: list[str]) -> JobSetTtlResponse:
+        job = await self.get(query=job_id, projection_model=JobForSetTtlSchema)
+
+        if minions:
+            updated_minions = await self.__set_returns_ttl(job_id=job.id, ttl=ttl, minions=minions)
+            resolved_ttl = ttl if ttl is not None else job.ttl
+        else:
+            updated_minions = []
+            resolved_ttl = await self.__set_job_ttl(job=job, ttl=ttl)
+
+        return JobSetTtlResponse(
+            minions=updated_minions, waiting_expires_at_dt=job.created + timedelta(seconds=resolved_ttl)
+        )
+
+    async def __prepare_create_obj(
         self,
         data: JobCreateSchema,
         validate_data: bool = True,
@@ -121,27 +186,18 @@ class JobService(MongoBaseWithNotifyService[JobRepository, JobModel, JobCreateSc
         if not data.jid:
             data.jid = str(JID.generate())
 
+        template_default_ttl: int | None = None
+
         if data.template_id:
             try:
                 template = await self.task_template_service.get({'_id': data.template_id}, session=session)
                 data.fun = template.fun
-
-                if template.defaults is None or template.defaults.ttl is None:
-                    ttl = SETTINGS.jobs_default_ttl
-                elif template.defaults.ttl == 0:
-                    ttl = SETTINGS.jobs_max_ttl
-                else:
-                    ttl = template.defaults.ttl
+                template_default_ttl = template.defaults.ttl if template.defaults else None
             except ObjectNotFoundException:
                 msg = f'Template with id "{data.template_id}" not found'
                 raise JobCreateException(msg) from None
-        else:
-            ttl = SETTINGS.jobs_default_ttl
 
-        if data.ttl is None:
-            data.ttl = ttl
-        elif data.ttl == 0:
-            data.ttl = SETTINGS.jobs_max_ttl
+        data.ttl = self.resolve_ttl(ttl=data.ttl, template_default_ttl=template_default_ttl)
 
         if not validate_data:
             if data.fun == 'state.apply' and data.kwarg and 'mods' not in data.kwarg and data.template_id:

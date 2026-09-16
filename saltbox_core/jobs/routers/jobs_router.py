@@ -1,6 +1,5 @@
 import csv
 import io
-from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends
@@ -12,17 +11,16 @@ from saltbox_core.jobs.schemas.job_return_schemas import (
     JobReturnListResponse,
     JobReturnsDataCSVBody,
     JobReturnsListBody,
-    JobReturnsSetTtlBody,
-    JobReturnsSetTtlResponse,
     JobReturnStatus,
 )
 from saltbox_core.jobs.schemas.job_schemas import (
     CreateJobRequest,
     JobCreateSchema,
-    JobForJobReturnsTtlSchema,
     JobListBody,
     JobModel,
     JobsActions,
+    JobSetTtlBody,
+    JobSetTtlResponse,
     JobsListResponse,
 )
 from saltbox_core.jobs.services.job_return_service import JobReturnService, get_job_return_service
@@ -106,6 +104,33 @@ async def job_create(
 
 
 @router.post(
+    '/set-ttl',
+    operation_id='job_set_ttl',
+    summary='Set the TTL of a job or of some of its minions',
+    description=(
+        'Sets the TTL of the job, or of its job returns when `minions` is not empty.\n\n'
+        '`minions` switches what is changed:\n\n'
+        '- **Non-empty** — the TTL is applied to the job returns of the listed minions only, and such a per-minion '
+        'value takes priority over the TTL of the job. `0` expires those minions immediately, `null` drops the '
+        'override and puts them back under the TTL of the job.\n'
+        '- **Empty** — the TTL of the job itself is changed and no job return is touched. Here the value follows the '
+        'job creation rules, which are different: `0` means the maximum allowed TTL, and `null` resets to the default '
+        'of the task template of the job, or to the system default when there is none. Note that an entire job '
+        'therefore cannot be expired immediately; use `1` to expire it as soon as possible.'
+    ),
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.jobs.base',
+        action=JobsActions.RUN,
+    ).model_dump(by_alias=True),
+)
+async def job_set_ttl(
+    body: Annotated[JobSetTtlBody, Body()],
+    job_service: Annotated[JobService, Depends(get_job_service)],
+) -> JobSetTtlResponse:
+    return await job_service.set_ttl(job_id=body.job_id, ttl=body.ttl, minions=body.minions)
+
+
+@router.post(
     '/returns/list',
     operation_id='job_returns_list',
     openapi_extra=GatewayEndpointConfig(
@@ -132,28 +157,6 @@ async def job_returns_list(
     )
 
     return job_returns
-
-
-@router.post(
-    '/returns/set-ttl',
-    operation_id='job_returns_set_ttl',
-    openapi_extra=GatewayEndpointConfig(
-        policy='core.jobs.base',
-        action=JobsActions.RUN,
-    ).model_dump(by_alias=True),
-)
-async def job_returns_set_ttl(
-    body: Annotated[JobReturnsSetTtlBody, Body()],
-    job_service: Annotated[JobService, Depends(get_job_service)],
-    job_return_service: Annotated[JobReturnService, Depends(get_job_return_service)],
-) -> JobReturnsSetTtlResponse:
-    job = await job_service.get(query=body.job_id, projection_model=JobForJobReturnsTtlSchema)
-    minions = await job_return_service.set_ttl_to_waiting_returns(job_id=job.id, ttl=body.ttl, minions=body.minions)
-
-    return JobReturnsSetTtlResponse(
-        minions=minions,
-        waiting_expires_at_dt=job.created + timedelta(seconds=body.ttl if body.ttl is not None else job.ttl),
-    )
 
 
 @router.post(

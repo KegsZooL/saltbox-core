@@ -44,7 +44,6 @@ class JobReadOnlyFieldsMixin(SourceMixin):
     kwarg: dict | None = None
 
     template_id: PyObjectId | None = None
-    ttl: int = Field(ge=1, le=SETTINGS.jobs_max_ttl, default=SETTINGS.jobs_default_ttl)
 
     user: UserShort | None = Field(default=SYSTEM_SHORT_USER)
 
@@ -56,6 +55,7 @@ class JobEditableFieldsMixin(BaseModel):
     stamp: TimezoneAwareDatetime | None = Field(default=None)
     status: JobStatus = Field(default=JobStatus.starting)
     launch_error_type: str | None = None
+    ttl: int = Field(ge=1, le=SETTINGS.jobs_max_ttl, default=SETTINGS.jobs_default_ttl)
 
 
 class JobMinionsCountAggregation(BaseModel):
@@ -138,8 +138,9 @@ class JobWithJidAndSaltMasterOnlySchema(IDMixin):
     salt_master: str
 
 
-class JobForJobReturnsTtlSchema(CreatedModifiedMixin, IDMixin):
+class JobForSetTtlSchema(CreatedModifiedMixin, IDMixin):
     ttl: int
+    template_id: PyObjectId | None = None
 
 
 class JobForTaskStatusUpdateSchema(SourceMixin, IDMixin):
@@ -179,6 +180,17 @@ class CreateJobRequest(BaseModel):
     kwarg: dict | None = None
     ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl, default=None)
     template_id: PyObjectId | None = None
+
+
+class JobSetTtlBody(BaseModel):
+    job_id: PyObjectId
+    ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl)
+    minions: list[str] = Field(default_factory=list)
+
+
+class JobSetTtlResponse(BaseModel):
+    minions: list[str]
+    waiting_expires_at_dt: TimezoneAwareDatetime
 
 
 # Permissions

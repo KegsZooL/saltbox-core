@@ -129,17 +129,6 @@ class JobReturnsListBody(SkipLimitParams, QueryParams, SortParams):
     model_config = ConfigDict(extra='ignore')
 
 
-class JobReturnsSetTtlBody(BaseModel):
-    job_id: PyObjectId
-    ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl)
-    minions: list[str] = Field(default_factory=list)
-
-
-class JobReturnsSetTtlResponse(BaseModel):
-    minions: list[str]
-    waiting_expires_at_dt: TimezoneAwareDatetime
-
-
 class JobReturnDataOnlyScheme(JobReturnDataMixin, IDMixin):
     jid: StrJid
     minion_id: str
