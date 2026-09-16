@@ -19,6 +19,8 @@ from saltbox_core.jobs.schemas.job_return_schemas import (
     JobReturnForDataList,
     JobReturnModel,
     JobReturnNotifySchema,
+    JobReturnStatus,
+    JobReturnTgtOnlySchema,
     JobReturnUpdateSchema,
 )
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
@@ -61,6 +63,34 @@ class JobReturnService(
                         columns.append(column_name)
 
         return JobReturnDataListSchema(columns=list(columns), data=data)
+
+    async def get_job_ids_by_return_status(self, job_ids: set[PyObjectId], status: JobReturnStatus) -> set[PyObjectId]:
+        groups = await self.repo.aggregate(
+            pipeline=[
+                {'$match': {'job_id': {'$in': list(job_ids)}, 'status': status}},
+                {'$group': {'_id': '$job_id'}},
+            ]
+        )
+
+        found_job_ids: set[PyObjectId] = set()
+
+        for group in groups:
+            found_job_ids.add(PyObjectId(group['_id']))
+
+        return found_job_ids
+
+    async def set_ttl_to_waiting_returns(self, job_id: PyObjectId, ttl: int | None, minions: list[str]) -> list[str]:
+        query: dict[str, Any] = {'job_id': job_id, 'status': JobReturnStatus.waiting}
+
+        if minions:
+            query['minion_id'] = {'$in': minions}
+
+        updated_ids = await self.bulk_update(query=query, data={'ttl': ttl})
+        updated_returns = await self.get_list(
+            query={'_id': {'$in': updated_ids}}, projection_model=JobReturnTgtOnlySchema
+        )
+
+        return [job_return.minion_id for job_return in updated_returns]
 
     async def get_data_list_paginated(
         self,

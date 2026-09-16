@@ -138,6 +138,10 @@ class JobWithJidAndSaltMasterOnlySchema(IDMixin):
     salt_master: str
 
 
+class JobForJobReturnsTtlSchema(CreatedModifiedMixin, IDMixin):
+    ttl: int
+
+
 class JobForTaskStatusUpdateSchema(SourceMixin, IDMixin):
     tgt: str | list[str]
     salt_master: str

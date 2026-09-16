@@ -49,6 +49,7 @@ class JobReturnRepository(BaseMongoRepository[JobReturnModel]):
                 ('salt_master', pymongo.ASCENDING),
                 ('minion_id', pymongo.ASCENDING),
             ],
+            'status__ttl_index_asc': [('status', pymongo.ASCENDING), ('ttl', pymongo.ASCENDING)],
         }
         aggregations: ClassVar[AggregationsStore] = AggregationsStore(
             aggregations=[
@@ -90,6 +91,23 @@ class JobReturnRepository(BaseMongoRepository[JobReturnModel]):
                         ),
                         UnwindAggregationStage(path='$job'),
                     ],
+                ),
+                AggregatedField(
+                    field_name='waiting_expires_at_dt',
+                    stages=[
+                        AddFieldsAggregationStage(
+                            fields={
+                                'waiting_expires_at_dt': {
+                                    '$dateAdd': {
+                                        'startDate': '$job.created',
+                                        'unit': 'second',
+                                        'amount': {'$ifNull': ['$ttl', '$job.ttl']},
+                                    }
+                                }
+                            }
+                        )
+                    ],
+                    parent_aggregations=['job'],
                 ),
             ]
         )

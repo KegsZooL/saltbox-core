@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from saltbox_core.config import SETTINGS
 from saltbox_core.jobs.schemas.job_schemas import StrJid
 from saltbox_sdk.db.mongo.schemas_base import IDMixin, PyObjectId, QueryParams, SortParams
 from saltbox_sdk.db.schemas_base import (
@@ -37,6 +38,12 @@ class JobReturnReadOnlyFieldsMixin(SourceMixin):
 
 class JobReturnEditableFieldsMixin(BaseModel):
     status: JobReturnStatus = Field(default=JobReturnStatus.waiting)
+    ttl: int | None = Field(
+        description='If is `null` means there is no override and the job TTL is used',
+        ge=0,
+        le=SETTINGS.jobs_max_ttl,
+        default=None,
+    )
     retcode: int | None = None
     fun_args: list | None = None
     fun_kwarg: dict | None = None
@@ -92,6 +99,7 @@ class JobReturnTgtOnlySchema(IDMixin):
 
 
 class JobReturnForJobWatcherSchema(SourceMixin, IDMixin):
+    job_id: PyObjectId
     jid: StrJid
     minion_id: str
     salt_master: str
@@ -119,6 +127,17 @@ class JobReturnDataListSchema(BaseModel):
 
 class JobReturnsListBody(SkipLimitParams, QueryParams, SortParams):
     model_config = ConfigDict(extra='ignore')
+
+
+class JobReturnsSetTtlBody(BaseModel):
+    job_id: PyObjectId
+    ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl)
+    minions: list[str] = Field(default_factory=list)
+
+
+class JobReturnsSetTtlResponse(BaseModel):
+    minions: list[str]
+    waiting_expires_at_dt: TimezoneAwareDatetime
 
 
 class JobReturnDataOnlyScheme(JobReturnDataMixin, IDMixin):

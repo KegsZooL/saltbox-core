@@ -1,5 +1,6 @@
 import csv
 import io
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends
@@ -11,11 +12,14 @@ from saltbox_core.jobs.schemas.job_return_schemas import (
     JobReturnListResponse,
     JobReturnsDataCSVBody,
     JobReturnsListBody,
+    JobReturnsSetTtlBody,
+    JobReturnsSetTtlResponse,
     JobReturnStatus,
 )
 from saltbox_core.jobs.schemas.job_schemas import (
     CreateJobRequest,
     JobCreateSchema,
+    JobForJobReturnsTtlSchema,
     JobListBody,
     JobModel,
     JobsActions,
@@ -128,6 +132,28 @@ async def job_returns_list(
     )
 
     return job_returns
+
+
+@router.post(
+    '/returns/set-ttl',
+    operation_id='job_returns_set_ttl',
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.jobs.base',
+        action=JobsActions.RUN,
+    ).model_dump(by_alias=True),
+)
+async def job_returns_set_ttl(
+    body: Annotated[JobReturnsSetTtlBody, Body()],
+    job_service: Annotated[JobService, Depends(get_job_service)],
+    job_return_service: Annotated[JobReturnService, Depends(get_job_return_service)],
+) -> JobReturnsSetTtlResponse:
+    job = await job_service.get(query=body.job_id, projection_model=JobForJobReturnsTtlSchema)
+    minions = await job_return_service.set_ttl_to_waiting_returns(job_id=job.id, ttl=body.ttl, minions=body.minions)
+
+    return JobReturnsSetTtlResponse(
+        minions=minions,
+        waiting_expires_at_dt=job.created + timedelta(seconds=body.ttl if body.ttl is not None else job.ttl),
+    )
 
 
 @router.post(
