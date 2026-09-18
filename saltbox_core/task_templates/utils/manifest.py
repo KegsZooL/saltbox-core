@@ -130,6 +130,7 @@ class SourceServeUpdater:
         '.git',
         '.gitignore',
         'README.md',
+        'LICENSE',
         *MANIFEST_FILE_ALLOWED_NAMES,
     )
     ALLOW_DUPLICATING_DIRS = SETTINGS.salt_modules_allow_duplicating_dirs
