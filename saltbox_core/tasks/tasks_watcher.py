@@ -1,8 +1,10 @@
 import asyncio
+from datetime import timedelta
+from typing import Any
 
 from redis import asyncio as aioredis
 
-from saltbox_core.config import logger
+from saltbox_core.config import SETTINGS, logger
 from saltbox_core.jobs.repositories.job_repository import JobRepository
 from saltbox_core.jobs.repositories.job_return_repository import JobReturnRepository
 from saltbox_core.jobs.services.job_return_service import JobReturnService
@@ -21,7 +23,8 @@ from saltbox_core.task_templates.services.template import TaskTemplateService
 from saltbox_core.tasks.repositories.task import TaskRepository
 from saltbox_core.tasks.repositories.tasks_minion import TaskMinionRepository
 from saltbox_core.tasks.repositories.tasks_status import TaskStatusRepository
-from saltbox_core.tasks.schemas.task import TaskForLifespanModel
+from saltbox_core.tasks.schemas.task import TaskForLifespanModel, TaskForStatusUpdateSchema
+from saltbox_core.tasks.schemas.tasks_minion import TaskMinionLockedSchema, TaskMinionStatus
 from saltbox_core.tasks.schemas.tasks_status import ACTIVE_TASK_STATUSES
 from saltbox_core.tasks.services.task import TaskService
 from saltbox_core.tasks.services.tasks_lifespan import TaskLifespanService
@@ -30,6 +33,8 @@ from saltbox_core.tasks.services.tasks_status import TaskStatusService
 from saltbox_core.tkq import shutdown_broker, startup_broker
 from saltbox_sdk.config.redis_config import REDIS_SETTINGS
 from saltbox_sdk.db.mongo.config import get_mongo_db
+from saltbox_sdk.exceptions import ObjectNotFoundException
+from saltbox_sdk.utilities.helpers import utc_now
 
 
 class TasksWatcher:
@@ -58,6 +63,40 @@ class TasksWatcher:
             self.redis = await aioredis.from_url(REDIS_SETTINGS.redis_url, **REDIS_SETTINGS.redis_connection_kwargs)
 
         return self.redis
+
+    async def release_locked_task_minions(
+        self, task_service: TaskService, task_minion_service: TaskMinionService
+    ) -> None:
+        locked_task_minions = await task_minion_service.get_list(
+            query={
+                'status': TaskMinionStatus.in_work,
+                'start_last_dt': {'$lt': utc_now() - timedelta(seconds=SETTINGS.tasks_locked_minion_min_age)},
+                'unfinished_job_returns_count': 0,
+            },
+            projection_model=TaskMinionLockedSchema,
+        )
+
+        for task_minion in locked_task_minions:
+            max_retries = 0
+
+            try:
+                task = await task_service.get(query=task_minion.task_id, projection_model=TaskForStatusUpdateSchema)
+                max_retries = task.max_retries
+            except ObjectNotFoundException:
+                logger.warning(f'Task {task_minion.task_id} of a locked task minion does not exist')
+
+            data_to_update: dict[str, Any] = {'status': TaskMinionStatus.pending}
+
+            if task_minion.count_runs >= max_retries:
+                data_to_update = {'status': TaskMinionStatus.failed, 'finished_dt': utc_now()}
+
+            logger.warning(
+                f'Task minion {task_minion.id} of task {task_minion.task_id} still locks '
+                f'minion {task_minion.minion_id} with no unfinished job return, '
+                f'releasing it as {data_to_update["status"]}'
+            )
+
+            await task_minion_service.update(query=task_minion.id, data=data_to_update)
 
     async def process(self) -> None:
         redis: aioredis.Redis = await self.get_redis()
@@ -94,7 +133,14 @@ class TasksWatcher:
 
         logger.info('Processing tasks...')
 
+        locked_check_interval = timedelta(seconds=SETTINGS.tasks_locked_minions_check_interval)
+        locked_checked_at = utc_now() - locked_check_interval
+
         while True:
+            if utc_now() - locked_checked_at >= locked_check_interval:
+                await self.release_locked_task_minions(task_service, task_minion_service)
+                locked_checked_at = utc_now()
+
             tasks: list[TaskForLifespanModel] = await task_service.get_list(
                 query={'status.type': {'$in': list(ACTIVE_TASK_STATUSES)}},
                 limit=0,

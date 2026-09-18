@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 from redis.asyncio import Redis
 
-from saltbox_core.config import logger
+from saltbox_core.config import SETTINGS, logger
 from saltbox_core.jobs.schemas.job_return_schemas import JobReturnStatus, JobReturnTgtOnlySchema
 from saltbox_core.jobs.schemas.job_schemas import JobCreateSchema, JobStatus, JobWithJidAndSaltMasterOnlySchema
 from saltbox_core.jobs.services.job_return_service import JobReturnService, get_job_return_service
@@ -118,6 +118,10 @@ class TaskLifespanService:
 
         if task.status and task.status.type in [TaskStatus.running, TaskStatus.wait_minions]:
             await self.__stop_jobs()
+            await self.task_minion_service.bulk_update(
+                query={'task_id': task.id, 'status': TaskMinionStatus.busy},
+                data={'status': TaskMinionStatus.pending},
+            )
             await self.update_task(status=TaskStatus.stopping)
 
     async def restart_on_minions(self, minions_ids: list[PyObjectId]) -> None:
@@ -209,13 +213,11 @@ class TaskLifespanService:
 
     @staticmethod
     def __active_dt() -> datetime:
-        # TODO: Get from settings
-        return utc_now() - timedelta(seconds=60 * 10)
+        return utc_now() - timedelta(seconds=SETTINGS.tasks_minion_active_period)
 
     @staticmethod
     def __timedelta_to_sync_task() -> timedelta:
-        # TODO: Get from settings
-        return timedelta(seconds=60 * 10)
+        return timedelta(seconds=SETTINGS.tasks_sync_interval)
 
     async def get_busy_minions_by_tgt(self, tgt: dict[str, list[str]]) -> list[dict[str, str]]:
         task = await self.get_task()
@@ -370,16 +372,33 @@ class TaskLifespanService:
             projection_model=TaskMinionTgtOnlySchema,
         )
 
-        if minions:
-            ttl: int | None = task.ttl
+        if not minions:
+            return 0
 
-            if ttl is None and task.task_template and task.task_template.defaults:
-                ttl = task.task_template.defaults.ttl
+        taken_minion_ids = set(
+            await self.task_minion_service.bulk_update(
+                query={'_id': {'$in': [minion.id for minion in minions]}, 'status': TaskMinionStatus.pending},
+                data={
+                    'status': TaskMinionStatus.in_work,
+                    'start_last_dt': utc_now(),
+                },
+            )
+        )
+        taken_minions = [minion for minion in minions if minion.id in taken_minion_ids]
 
+        if not taken_minions:
+            return 0
+
+        ttl: int | None = task.ttl
+
+        if ttl is None and task.task_template and task.task_template.defaults:
+            ttl = task.task_template.defaults.ttl
+
+        try:
             await self.job_service.create(
                 data=JobCreateSchema.model_validate(
                     {
-                        'tgt': [minion.minion_id for minion in minions],
+                        'tgt': [minion.minion_id for minion in taken_minions],
                         'tgt_type': 'list',
                         'salt_master': master,
                         'fun': task.fun,
@@ -394,16 +413,14 @@ class TaskLifespanService:
                 validate_data=False,
                 extra_pillarenv=[f'task:{task.id!s}'],
             )
-
+        except Exception:
             await self.task_minion_service.bulk_update(
-                query={'_id': {'$in': [minion.id for minion in minions]}},
-                data={
-                    'status': TaskMinionStatus.in_work,
-                    'start_last_dt': utc_now(),
-                },
+                query={'_id': {'$in': list(taken_minion_ids)}},
+                data={'status': TaskMinionStatus.pending},
             )
+            raise
 
-        return len(minions)
+        return len(taken_minions)
 
     async def handle_running_status(self) -> None:
         task = await self.get_task()

@@ -34,7 +34,7 @@ from saltbox_core.tkq import shutdown_broker, startup_broker
 from saltbox_sdk.config.redis_config import REDIS_SETTINGS
 from saltbox_sdk.db.mongo.config import get_mongo_db
 from saltbox_sdk.db.mongo.schemas_base import EmptyModel, PyObjectId
-from saltbox_sdk.exceptions import ObjectNotFoundException
+from saltbox_sdk.exceptions import MultipleObjectsFoundException, ObjectNotFoundException
 from saltbox_sdk.utilities.helpers import utc_now
 
 
@@ -106,8 +106,11 @@ class JobsWatcher:
 
                 await self.task_minion_service.update(query=task_minion.id, data=data_to_update)
                 await self.task_service.update(query=task.id, data={})
-            except ObjectNotFoundException:
-                ...
+            except (ObjectNotFoundException, MultipleObjectsFoundException) as e:
+                logger.warning(
+                    f'Cannot update task minion of task {job_return.source.id} '
+                    f'for minion {job_return.minion_id} on timeout: {e}'
+                )
 
     async def finish_completed_jobs(self, job_ids: set[PyObjectId]) -> None:
         if not job_ids:

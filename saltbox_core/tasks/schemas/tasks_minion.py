@@ -75,6 +75,12 @@ class TaskMinionForTaskStatusUpdateSchema(IDMixin):
     count_runs: int = Field(title='Count runs')
 
 
+class TaskMinionLockedSchema(IDMixin):
+    task_id: PyObjectId = Field(title='Task ID')
+    minion_id: str = Field(title='Minion ID')
+    count_runs: int = Field(title='Count runs')
+
+
 class TaskMinionForRequirementsCheckSchema(IDMixin):
     minion_inner_id: PyObjectId = Field(title='Minion Mongo ID')
     status: TaskMinionStatus = Field(title='Status', default=TaskMinionStatus.pending)

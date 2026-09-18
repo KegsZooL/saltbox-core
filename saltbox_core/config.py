@@ -134,6 +134,22 @@ class Settings(BaseSettings):
     tasks_defaults_max_jobs_count_at_same_time: int = Field(title='Max jobs count at some time', ge=1, default=1)
     tasks_defaults_max_retries: int = Field(title='Max retries', ge=0, default=1)
     tasks_defaults_retry_delay: int = Field(title='Retry delay', description='in seconds', ge=0, default=10)
+    tasks_minion_active_period: int = Field(
+        ge=0,
+        default=60 * 10,
+        description='Number of seconds since the last minion activity while it is still considered active',
+    )
+    tasks_sync_interval: int = Field(
+        ge=1, default=60 * 10, description='Number of seconds without task updates before its jobs are synced'
+    )
+    tasks_locked_minion_min_age: int = Field(
+        ge=0,
+        default=60 * 10,
+        description='Number of seconds since a task minion was taken by a job before it may be treated as locked',
+    )
+    tasks_locked_minions_check_interval: int = Field(
+        ge=1, default=60, description='Number of seconds between checks for task minions locked by a finished job'
+    )
 
     # JOBS
     jobs_max_ttl: int = Field(title='Max Job TTL', ge=0, default=60 * 60 * 24 * 7)

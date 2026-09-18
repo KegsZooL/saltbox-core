@@ -5,6 +5,7 @@ from fastapi import Depends
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.operations import _IndexKeyHint
 
+from saltbox_core.jobs.schemas.job_return_schemas import JobReturnStatus
 from saltbox_core.tasks.schemas.tasks_minion import TaskMinionModel
 from saltbox_sdk.db.mongo.aggregations import (
     AddFieldsAggregationStage,
@@ -102,6 +103,25 @@ class TaskMinionRepository(BaseMongoRepository[TaskMinionModel]):
                 AggregatedField(
                     field_name='count_runs',
                     stages=[AddFieldsAggregationStage(fields={'count_runs': {'$size': '$job_returns'}})],
+                    parent_aggregations=['job_returns'],
+                ),
+                AggregatedField(
+                    field_name='unfinished_job_returns_count',
+                    stages=[
+                        AddFieldsAggregationStage(
+                            fields={
+                                'unfinished_job_returns_count': {
+                                    '$size': {
+                                        '$filter': {
+                                            'input': '$job_returns',
+                                            'as': 'job_return',
+                                            'cond': {'$eq': ['$$job_return.status', JobReturnStatus.waiting]},
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    ],
                     parent_aggregations=['job_returns'],
                 ),
                 AggregatedField(
