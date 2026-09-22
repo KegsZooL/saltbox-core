@@ -25,6 +25,7 @@ from saltbox_core.minion_collections.schemas.minion import (
 from saltbox_core.minion_collections.services.pipeline_builder import MongoPipelineBuilder
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
 from saltbox_sdk.db.schemas_base import PaginatedResponse
+from saltbox_sdk.event_bus.schemas import ExtraDataCategoryType
 from saltbox_sdk.exceptions import ObjectNotFoundException
 from saltbox_sdk.serivces.mongo_base_service import MongoBaseService, ProjectionModel
 
@@ -142,8 +143,9 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
     def build_extra_data_mongo_pipeline(
         *,
         query: dict[str, Any] | None = ...,
-        category_source: str | None = ...,
-        category_name: str | None = ...,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = ...,
         escape_search_str: bool = ...,
         group_by_fields: list[str] | None = ...,
@@ -155,8 +157,9 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
     def build_extra_data_mongo_pipeline(
         *,
         query: dict[str, Any] | None = ...,
-        category_source: str | None = ...,
-        category_name: str | None = ...,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = ...,
         escape_search_str: bool = ...,
         group_by_fields: list[str] | None = ...,
@@ -170,8 +173,9 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
     def build_extra_data_mongo_pipeline(
         *,
         query: dict[str, Any] | None = None,
-        category_source: str | None = None,
-        category_name: str | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = None,
         escape_search_str: bool = True,
         group_by_fields: list[str] | None = None,
@@ -181,32 +185,32 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         sort: dict[str, SortOrder] | None = None,
     ) -> list[dict[str, Any]]:
         pipeline: list[dict[str, Any]] = []
-        source_input: dict[str, Any] = {'$objectToArray': {'$ifNull': ['$extra_static', {}]}}
-        name_input: dict[str, Any] = {'$objectToArray': '$$categories'}
-        category_query: dict[str, Any] = {}
 
         if query:
             pipeline.append({'$match': query})
 
-        if category_source:
-            category_query['source'] = category_source
-            source_input = {
-                '$filter': {'input': source_input, 'as': 'src_pair', 'cond': {'$eq': ['$$src_pair.k', category_source]}}
+        source_input = {
+            '$filter': {
+                'input': {'$objectToArray': {'$ifNull': ['$extra_static', {}]}},
+                'as': 'src_pair',
+                'cond': {'$eq': ['$$src_pair.k', category_source]},
             }
-        if category_name:
-            category_query['name'] = category_name
-            name_input = {
-                '$filter': {'input': name_input, 'as': 'cat_pair', 'cond': {'$eq': ['$$cat_pair.k', category_name]}}
+        }
+        name_input = {
+            '$filter': {
+                'input': {'$objectToArray': '$$categories'},
+                'as': 'cat_pair',
+                'cond': {'$eq': ['$$cat_pair.k', category_name]},
             }
+        }
 
         entry_filter = {'$filter': {'input': '$minions', 'as': 'm', 'cond': {'$eq': ['$$m.minion_id', '$$mid']}}}
         merge_with_meta = {'$mergeObjects': ['$data', '$_entry.data', {'_source': '$source', '_name': '$name'}]}
         lookup_pipeline: list[dict[str, Any]] = [
+            {'$match': {'source': category_source, 'name': category_name}},
             {'$addFields': {'_entry': {'$first': entry_filter}}},
             {'$replaceRoot': {'newRoot': merge_with_meta}},
         ]
-        if category_query:
-            lookup_pipeline.insert(0, {'$match': category_query})
 
         static_map = {
             '$map': {
@@ -231,28 +235,39 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             }
         }
 
-        pipeline.extend(
-            [
-                {
-                    '$lookup': {
-                        'from': 'minion_extra_data',
-                        'localField': '_id',
-                        'foreignField': 'minions.minion_id',
-                        'let': {'mid': '$_id'},
-                        'pipeline': lookup_pipeline,
-                        'as': '_aggregated_items',
-                    }
-                },
-                {'$addFields': {'_static_items': outer_reduce}},
-                {
-                    '$project': {
-                        '_id': 1 if group_by_fields else 0,
-                        'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']},
-                    }
-                },
-                {'$unwind': '$items'},
-            ]
-        )
+        skip_lookup = category_type == ExtraDataCategoryType.STATIC
+
+        if skip_lookup:
+            pipeline.extend(
+                [
+                    {'$addFields': {'_static_items': outer_reduce}},
+                    {'$project': {'_id': 1 if group_by_fields else 0, 'items': '$_static_items'}},
+                    {'$unwind': '$items'},
+                ]
+            )
+        else:
+            pipeline.extend(
+                [
+                    {
+                        '$lookup': {
+                            'from': 'minion_extra_data',
+                            'localField': '_id',
+                            'foreignField': 'minions.minion_id',
+                            'let': {'mid': '$_id'},
+                            'pipeline': lookup_pipeline,
+                            'as': '_aggregated_items',
+                        }
+                    },
+                    {'$addFields': {'_static_items': outer_reduce}},
+                    {
+                        '$project': {
+                            '_id': 1 if group_by_fields else 0,
+                            'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']},
+                        }
+                    },
+                    {'$unwind': '$items'},
+                ]
+            )
 
         if group_by_fields:
             group_key: dict[str, Any] = {field: {'$ifNull': [f'$items.{field}', None]} for field in group_by_fields}
@@ -305,11 +320,83 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
 
         return pipeline
 
+    @staticmethod
+    def build_grouped_aggregated_extra_data_pipeline(
+        *,
+        minion_ids: list[PyObjectId],
+        category_source: str,
+        category_name: str,
+        group_by_fields: list[str],
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+    ) -> list[dict[str, Any]]:
+        group_key: dict[str, Any] = {field: {'$ifNull': [f'$data.{field}', None]} for field in group_by_fields}
+        group_key['_source'] = '$source'
+        group_key['_name'] = '$name'
+
+        pipeline: list[dict[str, Any]] = [
+            {
+                '$match': {
+                    'source': category_source,
+                    'name': category_name,
+                    'minions.minion_id': {'$in': minion_ids},
+                }
+            },
+            {
+                '$project': {
+                    '_group_key': group_key,
+                    'minions': {
+                        '$filter': {
+                            'input': '$minions',
+                            'as': 'm',
+                            'cond': {'$in': ['$$m.minion_id', minion_ids]},
+                        }
+                    },
+                }
+            },
+            {'$unwind': '$minions'},
+            {'$group': {'_id': '$_group_key', '_minions': {'$addToSet': '$minions.minion_id'}}},
+            {'$replaceRoot': {'newRoot': {'$mergeObjects': ['$_id', {'_minions_count': {'$size': '$_minions'}}]}}},
+        ]
+
+        if search_str:
+            kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
+            regex = re.escape(search_str) if escape_search_str else search_str
+            search_match = {'$regexMatch': {'input': kv_value, 'regex': regex, 'options': 'i'}}
+            pipeline.append(
+                {
+                    '$match': {
+                        '$expr': {
+                            '$anyElementTrue': {
+                                '$map': {'input': {'$objectToArray': '$$ROOT'}, 'as': 'kv', 'in': search_match}
+                            }
+                        }
+                    }
+                }
+            )
+
+        data_branch: list[dict[str, Any]] = [
+            {'$sort': {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}}
+        ]
+        if skip:
+            data_branch.append({'$skip': skip})
+        if limit:
+            data_branch.append({'$limit': limit})
+
+        pipeline.append({'$facet': {'total': [{'$count': 'total'}], 'data': data_branch}})
+
+        return pipeline
+
     async def get_extra_data_list(
         self,
+        *,
         query: dict[str, Any] | None = None,
-        category_source: str | None = None,
-        category_name: str | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = None,
         escape_search_str: bool = True,
         group_by_fields: list[str] | None = None,
@@ -322,6 +409,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             query=query,
             category_source=category_source,
             category_name=category_name,
+            category_type=category_type,
             search_str=search_str,
             escape_search_str=escape_search_str,
             group_by_fields=group_by_fields,
@@ -336,9 +424,11 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
 
     async def get_paginated_extra_data_list(
         self,
+        *,
         query: dict[str, Any] | None = None,
-        category_source: str | None = None,
-        category_name: str | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = None,
         escape_search_str: bool = True,
         limit: int = 0,
@@ -352,6 +442,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             query=query,
             category_source=category_source,
             category_name=category_name,
+            category_type=category_type,
             search_str=search_str,
             escape_search_str=escape_search_str,
             count_only=True,
@@ -365,6 +456,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             query=query,
             category_source=category_source,
             category_name=category_name,
+            category_type=category_type,
             search_str=search_str,
             escape_search_str=escape_search_str,
             limit=limit,
@@ -377,10 +469,12 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
 
     async def get_paginated_grouped_extra_data_list(
         self,
+        *,
         group_by_fields: list[str],
         query: dict[str, Any] | None = None,
-        category_source: str | None = None,
-        category_name: str | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
         search_str: str | None = None,
         escape_search_str: bool = True,
         limit: int = 0,
@@ -390,10 +484,37 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
     ) -> PaginatedResponse[CollectionExtraDataListItemSchema]:
         query = await self.repo.__prepare_query__(query)
 
+        if category_type == ExtraDataCategoryType.AGGREGATED:
+            minion_docs = await self.repo.collection.find(
+                filter=query, projection={'_id': 1}, session=session
+            ).to_list()
+            minion_ids = [minion_doc['_id'] for minion_doc in minion_docs]
+
+            pipeline = self.build_grouped_aggregated_extra_data_pipeline(
+                minion_ids=minion_ids,
+                category_source=category_source,
+                category_name=category_name,
+                group_by_fields=group_by_fields,
+                search_str=search_str,
+                escape_search_str=escape_search_str,
+                limit=limit,
+                skip=skip,
+                sort=sort,
+            )
+            cursor = await self.repo.extra_data_repository.collection.aggregate(
+                pipeline=pipeline, session=session, allowDiskUse=True
+            )
+            facet_result = await cursor.to_list()
+            facet = facet_result[0] if facet_result else {'total': [], 'data': []}
+            total = facet['total'][0]['total'] if facet['total'] else 0
+
+            return PaginatedResponse[CollectionExtraDataListItemSchema](total=total, data=facet['data'])
+
         total_pipeline = self.build_extra_data_mongo_pipeline(
             query=query,
             category_source=category_source,
             category_name=category_name,
+            category_type=category_type,
             search_str=search_str,
             escape_search_str=escape_search_str,
             group_by_fields=group_by_fields,
@@ -408,6 +529,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             query=query,
             category_source=category_source,
             category_name=category_name,
+            category_type=category_type,
             search_str=search_str,
             escape_search_str=escape_search_str,
             group_by_fields=group_by_fields,

@@ -258,6 +258,7 @@ async def collection_extra_data_list(
         query=collection.full_query,
         category_source=category.source,
         category_name=category.name,
+        category_type=category.type,
         search_str=body.search,
         limit=body.limit,
         skip=body.skip,

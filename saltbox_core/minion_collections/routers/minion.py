@@ -285,6 +285,7 @@ async def extra_data_list(
         query={'minion_id': minion.minion_id, 'master': minion.master},
         category_source=category.source,
         category_name=category.name,
+        category_type=category.type,
         search_str=body.search,
         limit=body.limit,
         skip=body.skip,
