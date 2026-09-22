@@ -139,6 +139,11 @@ class Settings(BaseSettings):
         default=60 * 10,
         description='Number of seconds since the last minion activity while it is still considered active',
     )
+    tasks_minion_ping_ttl: int = Field(
+        ge=1,
+        default=60 * 5,
+        description='Number of seconds to wait for an inactive task minion to answer the liveness ping',
+    )
     tasks_sync_interval: int = Field(
         ge=1, default=60 * 10, description='Number of seconds without task updates before its jobs are synced'
     )
