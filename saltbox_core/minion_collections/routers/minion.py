@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from fastapi.responses import FileResponse
@@ -144,11 +144,11 @@ async def minion_retrieve(
 ) -> MinionDetailSchema:
     collection = await collection_service.get_by_slug(collection_slug)
 
-    ids = await minion_service.get_ids_by_query(query=collection.full_query)
-    if mid not in [i.id for i in ids]:
-        raise HTTPException(status_code=404, detail='Minion not found')
+    query: dict[str, Any] = {'_id': mid}
+    if collection.full_query:
+        query = {'$and': [query, collection.full_query]}
 
-    minion = await minion_service.get(mid)
+    minion = await minion_service.get(query=query)
 
     # TODO (a.baikov): doing like this because of additional_grains. Need to find a better way
     minion = MinionDetailSchema(**minion.model_dump(exclude={'id'}, by_alias=True), _id=minion.id)

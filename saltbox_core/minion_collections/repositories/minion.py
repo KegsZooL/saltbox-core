@@ -16,7 +16,6 @@ from saltbox_sdk.db.mongo.aggregations import (
     AggregationsStore,
     GroupAggregationStage,
     LookupAggregationStage,
-    MatchAggregationStage,
     ProjectAggregationStage,
     UnsetAggregationStage,
 )
@@ -140,9 +139,10 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
                     stages=[
                         LookupAggregationStage(
                             from_collection='minion_extra_data',
+                            local_field='_id',
+                            foreign_field='minions.minion_id',
                             let={'minion_id': '$_id'},
                             pipeline=[
-                                MatchAggregationStage(query={'$expr': {'$in': ['$$minion_id', '$minions.minion_id']}}),
                                 AddFieldsAggregationStage(
                                     fields={
                                         '_minion_entry': {

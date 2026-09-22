@@ -346,6 +346,8 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         sort: dict[str, SortOrder] | None = None,
         session: MongoAsyncClientSession | None = None,
     ) -> PaginatedResponse[ExtraDataListItemSchema]:
+        query = await self.repo.__prepare_query__(query)
+
         total_pipeline = self.build_extra_data_mongo_pipeline(
             query=query,
             category_source=category_source,
@@ -386,6 +388,8 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         sort: dict[str, SortOrder] | None = None,
         session: MongoAsyncClientSession | None = None,
     ) -> PaginatedResponse[CollectionExtraDataListItemSchema]:
+        query = await self.repo.__prepare_query__(query)
+
         total_pipeline = self.build_extra_data_mongo_pipeline(
             query=query,
             category_source=category_source,
