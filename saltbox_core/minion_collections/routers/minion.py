@@ -286,6 +286,7 @@ async def extra_data_list(
         category_source=category.source,
         category_name=category.name,
         category_type=category.type,
+        field_names=[field.name for field in category.fields],
         search_str=body.search,
         limit=body.limit,
         skip=body.skip,

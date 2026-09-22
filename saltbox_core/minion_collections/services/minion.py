@@ -149,6 +149,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         search_str: str | None = ...,
         escape_search_str: bool = ...,
         group_by_fields: list[str] | None = ...,
+        field_names: list[str] | None = ...,
         count_only: Literal[True],
     ) -> list[dict[str, Any]]: ...
 
@@ -163,6 +164,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         search_str: str | None = ...,
         escape_search_str: bool = ...,
         group_by_fields: list[str] | None = ...,
+        field_names: list[str] | None = ...,
         count_only: Literal[False] = False,
         limit: int = ...,
         skip: int = ...,
@@ -179,6 +181,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         search_str: str | None = None,
         escape_search_str: bool = True,
         group_by_fields: list[str] | None = None,
+        field_names: list[str] | None = None,
         count_only: bool = False,
         limit: int = 0,
         skip: int = 0,
@@ -312,7 +315,10 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         if count_only:
             pipeline.append({'$count': 'total'})
         else:
-            pipeline.append({'$sort': {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}})
+            full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
+            tiebreaker_fields = group_by_fields or field_names or []
+            full_sort.update({field: SortOrder.ASC for field in tiebreaker_fields if field not in full_sort})
+            pipeline.append({'$sort': full_sort})
             if skip:
                 pipeline.append({'$skip': skip})
             if limit:
@@ -378,9 +384,10 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
                 }
             )
 
-        data_branch: list[dict[str, Any]] = [
-            {'$sort': {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}}
-        ]
+        full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
+        full_sort.update({field: SortOrder.ASC for field in group_by_fields if field not in full_sort})
+
+        data_branch: list[dict[str, Any]] = [{'$sort': full_sort}]
         if skip:
             data_branch.append({'$skip': skip})
         if limit:
@@ -400,6 +407,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         search_str: str | None = None,
         escape_search_str: bool = True,
         group_by_fields: list[str] | None = None,
+        field_names: list[str] | None = None,
         limit: int = 0,
         skip: int = 0,
         sort: dict[str, SortOrder] | None = None,
@@ -413,6 +421,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             search_str=search_str,
             escape_search_str=escape_search_str,
             group_by_fields=group_by_fields,
+            field_names=field_names,
             limit=limit,
             skip=skip,
             sort=sort,
@@ -429,6 +438,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         category_source: str,
         category_name: str,
         category_type: ExtraDataCategoryType,
+        field_names: list[str] | None = None,
         search_str: str | None = None,
         escape_search_str: bool = True,
         limit: int = 0,
@@ -457,6 +467,7 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             category_source=category_source,
             category_name=category_name,
             category_type=category_type,
+            field_names=field_names,
             search_str=search_str,
             escape_search_str=escape_search_str,
             limit=limit,
