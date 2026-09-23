@@ -124,13 +124,15 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             all_grains_keys = list(getattr(GrainsSchema, 'model_fields', {}).keys())
             logger.debug('Grains (standard only): %s', all_grains_keys)
 
-        keys = [key for key in minion_keys.keys() if key != 'grains'] + [f'grains.{key}' for key in all_grains_keys]
+        keys = [key for key in minion_keys.keys() if key not in {'grains', 'extra'}] + [
+            f'grains.{key}' for key in all_grains_keys
+        ]
 
         async with await Path(file_path).open(mode='w', newline='') as file:
             writer = csv.DictWriter(file, fieldnames=keys)
             await writer.writeheader()
             for item in data:
-                row = item.model_dump(exclude={'grains', 'last_activity_seconds'})
+                row = item.model_dump(exclude={'grains', 'last_activity_seconds', 'extra'})
                 grains_dict = item.grains.model_dump() if hasattr(item.grains, 'model_dump') else dict(item.grains)
                 for key in all_grains_keys:
                     row[f'grains.{key}'] = grains_dict.get(key)
