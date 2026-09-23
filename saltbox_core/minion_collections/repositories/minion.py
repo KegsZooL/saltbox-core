@@ -4,6 +4,7 @@ from typing import Annotated, Any, ClassVar, cast, overload
 
 import pymongo
 from fastapi import Depends
+from pymongo.asynchronous.client_session import AsyncClientSession as MongoAsyncClientSession
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.asynchronous.database import AsyncDatabase as MongoAsyncDatabase
 from pymongo.operations import _IndexKeyHint
@@ -21,6 +22,7 @@ from saltbox_sdk.db.mongo.aggregations import (
 )
 from saltbox_sdk.db.mongo.config import get_mongo
 from saltbox_sdk.db.mongo.repository_base import BaseMongoRepository, ProjectionModel
+from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
 from saltbox_sdk.event_bus.schemas import ExtraDataCategoryType
 
 
@@ -110,6 +112,202 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
             return await self.get(query=query, projection_model=projection_model)
         else:
             return await self.get(query=query)
+
+    async def get_ids(
+        self, query: dict[str, Any], *, session: MongoAsyncClientSession | None = None
+    ) -> list[PyObjectId]:
+        docs = await self.collection.find(filter=query, projection={'_id': 1}, session=session).to_list()
+        return [doc['_id'] for doc in docs]
+
+    @staticmethod
+    def build_extra_data_pipeline(
+        *,
+        query: dict[str, Any] | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        group_by_fields: list[str] | None = None,
+        field_names: list[str] | None = None,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+    ) -> list[dict[str, Any]]:
+        pipeline: list[dict[str, Any]] = []
+
+        if query:
+            pipeline.append({'$match': query})
+
+        source_input = {
+            '$filter': {
+                'input': {'$objectToArray': {'$ifNull': ['$extra_static', {}]}},
+                'as': 'src_pair',
+                'cond': {'$eq': ['$$src_pair.k', category_source]},
+            }
+        }
+        name_input = {
+            '$filter': {
+                'input': {'$objectToArray': '$$categories'},
+                'as': 'cat_pair',
+                'cond': {'$eq': ['$$cat_pair.k', category_name]},
+            }
+        }
+
+        entry_filter = {'$filter': {'input': '$minions', 'as': 'm', 'cond': {'$eq': ['$$m.minion_id', '$$mid']}}}
+        merge_with_meta = {'$mergeObjects': ['$data', '$_entry.data', {'_source': '$source', '_name': '$name'}]}
+        lookup_pipeline: list[dict[str, Any]] = [
+            {'$match': {'source': category_source, 'name': category_name}},
+            {'$addFields': {'_entry': {'$first': entry_filter}}},
+            {'$replaceRoot': {'newRoot': merge_with_meta}},
+        ]
+
+        static_map = {
+            '$map': {
+                'input': '$$this.v',
+                'as': 'it',
+                'in': {'$mergeObjects': ['$$it', {'_source': '$$src_name', '_name': '$$this.k'}]},
+            }
+        }
+        inner_reduce = {
+            '$reduce': {'input': name_input, 'initialValue': [], 'in': {'$concatArrays': ['$$value', static_map]}}
+        }
+        outer_reduce = {
+            '$reduce': {
+                'input': source_input,
+                'initialValue': [],
+                'in': {
+                    '$let': {
+                        'vars': {'src_name': '$$this.k', 'categories': '$$this.v'},
+                        'in': {'$concatArrays': ['$$value', inner_reduce]},
+                    }
+                },
+            }
+        }
+
+        skip_lookup = category_type == ExtraDataCategoryType.STATIC
+
+        if skip_lookup:
+            pipeline.extend(
+                [
+                    {'$addFields': {'_static_items': outer_reduce}},
+                    {'$project': {'_id': 1 if group_by_fields else 0, 'items': '$_static_items'}},
+                    {'$unwind': '$items'},
+                ]
+            )
+        else:
+            pipeline.extend(
+                [
+                    {
+                        '$lookup': {
+                            'from': 'minion_extra_data',
+                            'localField': '_id',
+                            'foreignField': 'minions.minion_id',
+                            'let': {'mid': '$_id'},
+                            'pipeline': lookup_pipeline,
+                            'as': '_aggregated_items',
+                        }
+                    },
+                    {'$addFields': {'_static_items': outer_reduce}},
+                    {
+                        '$project': {
+                            '_id': 1 if group_by_fields else 0,
+                            'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']},
+                        }
+                    },
+                    {'$unwind': '$items'},
+                ]
+            )
+
+        if group_by_fields:
+            group_key: dict[str, Any] = {field: {'$ifNull': [f'$items.{field}', None]} for field in group_by_fields}
+            group_key['_source'] = '$items._source'
+            group_key['_name'] = '$items._name'
+
+            pipeline.extend(
+                [
+                    {'$group': {'_id': group_key, '_minions': {'$addToSet': '$_id'}}},
+                    {
+                        '$replaceRoot': {
+                            'newRoot': {'$mergeObjects': ['$_id', {'_minions_count': {'$size': '$_minions'}}]}
+                        }
+                    },
+                ]
+            )
+        else:
+            pipeline.extend(
+                [
+                    {'$replaceRoot': {'newRoot': '$items'}},
+                    {'$group': {'_id': '$$ROOT'}},
+                    {'$replaceRoot': {'newRoot': '$_id'}},
+                ]
+            )
+
+        if search_str:
+            kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
+            regex = re.escape(search_str) if escape_search_str else search_str
+            search_match = {'$regexMatch': {'input': kv_value, 'regex': regex, 'options': 'i'}}
+            pipeline.append(
+                {
+                    '$match': {
+                        '$expr': {
+                            '$anyElementTrue': {
+                                '$map': {'input': {'$objectToArray': '$$ROOT'}, 'as': 'kv', 'in': search_match}
+                            }
+                        }
+                    }
+                }
+            )
+
+        full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
+        tiebreaker_fields = group_by_fields or field_names or []
+        full_sort.update({field: SortOrder.ASC for field in tiebreaker_fields if field not in full_sort})
+
+        data_branch: list[dict[str, Any]] = [{'$sort': full_sort}]
+        if skip:
+            data_branch.append({'$skip': skip})
+        if limit:
+            data_branch.append({'$limit': limit})
+
+        pipeline.append({'$facet': {'total': [{'$count': 'total'}], 'data': data_branch}})
+
+        return pipeline
+
+    async def get_extra_data_list_paginated(
+        self,
+        *,
+        query: dict[str, Any] | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        group_by_fields: list[str] | None = None,
+        field_names: list[str] | None = None,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+        session: MongoAsyncClientSession | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        pipeline = self.build_extra_data_pipeline(
+            query=query,
+            category_source=category_source,
+            category_name=category_name,
+            category_type=category_type,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            group_by_fields=group_by_fields,
+            field_names=field_names,
+            limit=limit,
+            skip=skip,
+            sort=sort,
+        )
+        cursor = await self.collection.aggregate(pipeline=pipeline, session=session, allowDiskUse=True)
+        facet_result = await cursor.to_list()
+        facet = facet_result[0] if facet_result else {'total': [], 'data': []}
+        total = facet['total'][0]['total'] if facet['total'] else 0
+
+        return total, facet['data']
 
     class Meta:
         collection_name = 'minions'

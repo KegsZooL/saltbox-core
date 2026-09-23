@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Any, ClassVar
 
 import pymongo
@@ -16,7 +17,7 @@ from saltbox_core.minion_collections.repositories.extra_data_category import (
 from saltbox_core.minion_collections.schemas.extra_data import ExtraDataModel
 from saltbox_sdk.db.mongo.config import get_mongo
 from saltbox_sdk.db.mongo.repository_base import BaseMongoRepository
-from saltbox_sdk.db.mongo.schemas_base import PyObjectId
+from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
 
 
 class ExtraDataRepository(BaseMongoRepository[ExtraDataModel]):
@@ -119,6 +120,109 @@ class ExtraDataRepository(BaseMongoRepository[ExtraDataModel]):
             return []
 
         return [PyObjectId(minion_id_str) for minion_id_str in raw_result[0]['minion_ids']]
+
+    @staticmethod
+    def build_grouped_pipeline(
+        *,
+        minion_ids: list[PyObjectId],
+        category_source: str,
+        category_name: str,
+        group_by_fields: list[str],
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+    ) -> list[dict[str, Any]]:
+        group_key: dict[str, Any] = {field: {'$ifNull': [f'$data.{field}', None]} for field in group_by_fields}
+        group_key['_source'] = '$source'
+        group_key['_name'] = '$name'
+
+        pipeline: list[dict[str, Any]] = [
+            {
+                '$match': {
+                    'source': category_source,
+                    'name': category_name,
+                    'minions.minion_id': {'$in': minion_ids},
+                }
+            },
+            {
+                '$project': {
+                    '_group_key': group_key,
+                    'minions': {
+                        '$filter': {
+                            'input': '$minions',
+                            'as': 'm',
+                            'cond': {'$in': ['$$m.minion_id', minion_ids]},
+                        }
+                    },
+                }
+            },
+            {'$unwind': '$minions'},
+            {'$group': {'_id': '$_group_key', '_minions': {'$addToSet': '$minions.minion_id'}}},
+            {'$replaceRoot': {'newRoot': {'$mergeObjects': ['$_id', {'_minions_count': {'$size': '$_minions'}}]}}},
+        ]
+
+        if search_str:
+            kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
+            regex = re.escape(search_str) if escape_search_str else search_str
+            search_match = {'$regexMatch': {'input': kv_value, 'regex': regex, 'options': 'i'}}
+            pipeline.append(
+                {
+                    '$match': {
+                        '$expr': {
+                            '$anyElementTrue': {
+                                '$map': {'input': {'$objectToArray': '$$ROOT'}, 'as': 'kv', 'in': search_match}
+                            }
+                        }
+                    }
+                }
+            )
+
+        full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
+        full_sort.update({field: SortOrder.ASC for field in group_by_fields if field not in full_sort})
+
+        data_branch: list[dict[str, Any]] = [{'$sort': full_sort}]
+        if skip:
+            data_branch.append({'$skip': skip})
+        if limit:
+            data_branch.append({'$limit': limit})
+
+        pipeline.append({'$facet': {'total': [{'$count': 'total'}], 'data': data_branch}})
+
+        return pipeline
+
+    async def get_grouped_paginated(
+        self,
+        *,
+        minion_ids: list[PyObjectId],
+        category_source: str,
+        category_name: str,
+        group_by_fields: list[str],
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        limit: int = 0,
+        skip: int = 0,
+        sort: dict[str, SortOrder] | None = None,
+        session: MongoAsyncClientSession | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        pipeline = self.build_grouped_pipeline(
+            minion_ids=minion_ids,
+            category_source=category_source,
+            category_name=category_name,
+            group_by_fields=group_by_fields,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            limit=limit,
+            skip=skip,
+            sort=sort,
+        )
+        cursor = await self.collection.aggregate(pipeline=pipeline, session=session, allowDiskUse=True)
+        facet_result = await cursor.to_list()
+        facet = facet_result[0] if facet_result else {'total': [], 'data': []}
+        total = facet['total'][0]['total'] if facet['total'] else 0
+
+        return total, facet['data']
 
 
 def get_extra_data_repository(
