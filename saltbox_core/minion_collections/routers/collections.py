@@ -23,7 +23,6 @@ from saltbox_core.minion_collections.services.extra_data_category import (
 from saltbox_core.minion_collections.services.minion import MinionService, get_minion_service
 from saltbox_core.tasks.schemas.task import TaskPolicyForCollectionSchema
 from saltbox_core.tasks.services.task import TaskService, get_task_service
-from saltbox_sdk.db.mongo.schemas_base import SortOrder
 from saltbox_sdk.db.schemas_base import PaginatedResponse, UserShort
 from saltbox_sdk.discovery_client.schemas import GatewayEndpointConfig
 from saltbox_sdk.fastapi_utils.dependencies import get_current_user, get_opa_query
@@ -82,7 +81,7 @@ async def collections_tree(
     return await collection_service.get_tree(
         query=opa_query,
         projection_model=CollectionTreeNodeSchema,
-        sort={'order': SortOrder.ASC, 'created': SortOrder.DESC},
+        sort=CollectionService.TREE_SORT,
     )
 
 
@@ -205,7 +204,7 @@ async def collection_move(
     return await collection_service.get_tree(
         query=opa_query,
         projection_model=CollectionTreeNodeSchema,
-        sort={'order': SortOrder.ASC, 'created': SortOrder.DESC},
+        sort=CollectionService.TREE_SORT,
     )
 
 

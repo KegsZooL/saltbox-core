@@ -28,6 +28,11 @@ class CollectionRepository(BaseTreeMongoRepository[CollectionModel]):
         collection_index_to_keys: ClassVar[dict[str, _IndexKeyHint]] = {
             'slug_unique_index_asc': [('slug', pymongo.ASCENDING)],
             'parent_id_title_unique_index_asc': [('parent_id', pymongo.ASCENDING), ('title', pymongo.ASCENDING)],
+            'parent_id_order_created_index': [
+                ('parent_id', pymongo.ASCENDING),
+                ('order', pymongo.ASCENDING),
+                ('created', pymongo.DESCENDING),
+            ],
         }
 
     async def prepare_object_data(

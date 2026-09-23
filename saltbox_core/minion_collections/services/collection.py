@@ -1,4 +1,4 @@
-from typing import Annotated, Any, TypeVar, overload
+from typing import Annotated, Any, ClassVar, TypeVar, overload
 from uuid import uuid4
 
 from fastapi import Depends
@@ -27,6 +27,8 @@ ProjectionModel = TypeVar('ProjectionModel', bound=BaseModel)
 class CollectionService(
     MongoBaseService[CollectionRepository, CollectionModel, CollectionCreateSchema, CollectionUpdateSchema]
 ):
+    TREE_SORT: ClassVar[dict[str, SortOrder]] = {'order': SortOrder.ASC, 'created': SortOrder.DESC}
+
     @overload
     async def get_by_slug(
         self,
@@ -125,7 +127,7 @@ class CollectionService(
         parent_children = await self.repo.get_children(
             target=parent_id,
             session=session,
-            sort={'order': SortOrder.ASC, '_id': SortOrder.ASC},
+            sort=self.TREE_SORT,
             projection_model=EmptyModel,
         )
 

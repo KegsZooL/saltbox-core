@@ -32,15 +32,20 @@ class AsyncMockCollection:
             if doc_id in self._inserted_docs:
                 cursor_results = [{'_id': doc_id, **self._inserted_docs[doc_id]}]
         else:
-            # Else find with mongomock
-            cursor_results = list(self.collection.find(filter=filter, projection=projection))
+            # Real MongoDB sorts on the full document before projecting, so fetch
+            # unprojected documents here and apply the projection only at the end.
+            cursor_results = list(self.collection.find(filter=filter))
+            if sort:
+                for field, direction in reversed(sort):
+                    cursor_results.sort(key=lambda x: x.get(field), reverse=(direction == -1))
             if skip > 0:
                 cursor_results = cursor_results[skip:]
             if limit > 0:
                 cursor_results = cursor_results[:limit]
-            if sort:
-                for field, direction in reversed(sort):
-                    cursor_results.sort(key=lambda x: x.get(field), reverse=(direction == -1))
+            if projection:
+                cursor_results = [
+                    {key: doc[key] for key in projection if key in doc} for doc in cursor_results
+                ]
 
         mock_cursor = self.mocker.MagicMock()
         mock_cursor.to_list = self.mocker.AsyncMock(return_value=cursor_results)
@@ -111,6 +116,12 @@ class AsyncMockCollection:
         # Если не нашли документ по _id, пробуем удалить через mongomock
         result = self.collection.delete_one(filter)
         return self.mocker.MagicMock(deleted_count=result.deleted_count)
+
+    async def bulk_write(self, requests, session=None):
+        """Эмуляция метода bulk_write (only UpdateOne with $set is supported)"""
+        for request in requests:
+            await self.update_one(request._filter, request._doc, session=session)
+        return self.mocker.MagicMock(modified_count=len(requests))
 
     async def delete_many(self, filter, session=None):
         """Эмуляция метода delete_many"""
