@@ -186,7 +186,7 @@ async def collection_update(
     '/move',
     operation_id='minion_collection_move',
     openapi_extra=GatewayEndpointConfig(
-        policy='core.collections.update',
+        policy='core.collections.move',
         action=CollectionActions.UPDATE,
     ).model_dump(by_alias=True),
 )
