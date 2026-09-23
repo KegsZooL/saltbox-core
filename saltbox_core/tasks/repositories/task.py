@@ -67,6 +67,38 @@ class TaskRepository(BaseMongoRepository[TaskModel]):
                     ],
                 ),
                 AggregatedField(
+                    field_name='status_data',
+                    parent_aggregations=['status'],
+                    stages=[
+                        AddFieldsAggregationStage(fields={'status_data': {'$ifNull': ['$status.data', {}]}}),
+                    ],
+                ),
+                AggregatedField(
+                    field_name='status_dt',
+                    parent_aggregations=['status'],
+                    stages=[
+                        AddFieldsAggregationStage(fields={'status_dt': '$status.created'}),
+                    ],
+                ),
+                AggregatedField(
+                    field_name='last_started_dt',
+                    stages=[
+                        LookupAggregationStage(
+                            from_collection='task_statuses',
+                            local_field='_id',
+                            foreign_field='task_id',
+                            as_field='last_started',
+                            pipeline=[
+                                {'$match': {'type': 'running', 'data.reason': 'started'}},
+                                {'$sort': {'created': -1}},
+                                {'$limit': 1},
+                            ],
+                        ),
+                        UnwindAggregationStage(path='$last_started', preserve_null_and_empty_arrays=True),
+                        AddFieldsAggregationStage(fields={'last_started_dt': '$last_started.created'}),
+                    ],
+                ),
+                AggregatedField(
                     field_name='minions_count',
                     stages=[
                         LookupAggregationStage(

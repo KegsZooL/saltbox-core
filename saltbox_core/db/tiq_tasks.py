@@ -68,6 +68,13 @@ class _NotifyServicesStoreSingleton:
         task_minion_repository = TaskMinionRepository(database=mongo_db)
         task_minion_service = TaskMinionService(repo=task_minion_repository, rdb=rdb)
         task_repository = TaskRepository(database=mongo_db)
+        job_service = JobService(
+            rdb=rdb,
+            job_repository=job_repository,
+            task_template_service=task_template_service,
+            job_return_service=job_return_service,
+            master_service=master_service,
+        )
         task_service = TaskService(
             repo=task_repository,
             rdb=rdb,
@@ -76,13 +83,7 @@ class _NotifyServicesStoreSingleton:
             task_minion_service=task_minion_service,
             collections_service=collection_service,
             minion_service=minion_service,
-        )
-        job_service = JobService(
-            rdb=rdb,
-            job_repository=job_repository,
-            task_template_service=task_template_service,
-            job_return_service=job_return_service,
-            master_service=master_service,
+            job_service=job_service,
         )
 
         return {

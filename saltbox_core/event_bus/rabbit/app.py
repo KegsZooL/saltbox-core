@@ -68,6 +68,13 @@ async def lifespan(context: ContextRepo) -> AsyncIterator[None]:
     task_status_repository = get_task_status_repository(db=mongo_db)
     task_status_service = get_task_status_service(repo=task_status_repository)
     task_repository = get_task_repository(db=mongo_db)
+    job_service = get_job_service(
+        rdb=redis_db,
+        job_repository=job_repository,
+        task_template_service=task_template_service,
+        job_return_service=job_return_service,
+        master_service=master_service,
+    )
     task_service = get_task_service(
         repo=task_repository,
         rdb=redis_db,
@@ -76,13 +83,7 @@ async def lifespan(context: ContextRepo) -> AsyncIterator[None]:
         task_minion_service=task_minion_service,
         collections_service=collection_service,
         minion_service=minion_service,
-    )
-    job_service = get_job_service(
-        rdb=redis_db,
-        job_repository=job_repository,
-        task_template_service=task_template_service,
-        job_return_service=job_return_service,
-        master_service=master_service,
+        job_service=job_service,
     )
 
     context.set_global('service_name', 'core')

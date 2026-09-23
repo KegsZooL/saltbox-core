@@ -9,6 +9,8 @@ from redis.asyncio import Redis
 
 from saltbox_core.config import SETTINGS, logger
 from saltbox_core.db.tiq_tasks import send_notify_by_mongo_service
+from saltbox_core.jobs.schemas.job_schemas import JobStatus
+from saltbox_core.jobs.services.job_services import JobService, get_job_service
 from saltbox_core.minion_collections.schemas.collection import CollectionModel
 from saltbox_core.minion_collections.services.collection import CollectionService, get_collection_service
 from saltbox_core.minion_collections.services.minion import MinionService, get_minion_service
@@ -30,8 +32,8 @@ from saltbox_core.tasks.schemas.task import (
     TaskUpdateSchema,
     TaskWithTargetCollectionIdOnlySchema,
 )
-from saltbox_core.tasks.schemas.tasks_minion import TaskMinionCreateSchema, TaskMinionInnerIdOnly
-from saltbox_core.tasks.schemas.tasks_status import TaskStatus, TaskStatusCreateSchema
+from saltbox_core.tasks.schemas.tasks_minion import TaskMinionCreateSchema, TaskMinionInnerIdOnly, TaskMinionStatus
+from saltbox_core.tasks.schemas.tasks_status import TaskRunReason, TaskStatus, TaskStatusCreateSchema, TaskStopReason
 from saltbox_core.tasks.services.tasks_minion import TaskMinionService, get_task_minion_service
 from saltbox_core.tasks.services.tasks_status import TaskStatusService, get_task_status_service
 from saltbox_sdk.db.mongo.config import get_mongo_session_with_transaction
@@ -56,6 +58,7 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
         task_minion_service: TaskMinionService,
         collections_service: CollectionService,
         minion_service: MinionService,
+        job_service: JobService,
         pillar_service: PillarService | None = None,
     ):
         super().__init__(repo=repo, rdb=rdb)
@@ -65,6 +68,7 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
         self.task_minion_service = task_minion_service
         self.collections_service = collections_service
         self.minion_service = minion_service
+        self.job_service = job_service
         self.pillar_service = pillar_service
         self.rdb = rdb
 
@@ -178,7 +182,8 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
                 'batch_size': data.batch_size if data.batch_size is not None else task_defaults['batch_size'],
                 'max_retries': data.max_retries if data.max_retries is not None else task_defaults['max_retries'],
                 'retry_delay': data.retry_delay if data.retry_delay is not None else task_defaults['retry_delay'],
-                'ttl': data.ttl,
+                'ttl_jobs': data.ttl_jobs,
+                'ttl_task': data.ttl_task,
                 'max_jobs_count_at_same_time': (
                     data.max_jobs_count_at_same_time
                     if data.max_jobs_count_at_same_time is not None
@@ -371,7 +376,7 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
 
         return task_id
 
-    async def update(
+    async def update(  # noqa: C901
         self,
         query: dict[str, Any] | PyObjectId,
         data: TaskUpdateSchema | dict[str, Any],
@@ -388,6 +393,20 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
             new_status = data.status
         elif isinstance(data, dict) and 'status' in data:
             new_status = data.pop('status')
+
+        status_data = None
+        if isinstance(data, dict) and 'status_data' in data:
+            status_data = data.pop('status_data')
+
+        ttl_jobs_provided = False
+        ttl_jobs = None
+        if isinstance(data, BaseModel):
+            if 'ttl_jobs' in data.model_fields_set:
+                ttl_jobs_provided = True
+                ttl_jobs = data.ttl_jobs
+        elif isinstance(data, dict) and 'ttl_jobs' in data:
+            ttl_jobs_provided = True
+            ttl_jobs = data['ttl_jobs']
 
         requirements = None
         if isinstance(data, BaseModel):
@@ -413,11 +432,12 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
                     {
                         'task_id': obj.id,
                         'type': new_status,
+                        'data': status_data or {},
                     }
                 ),
             )
 
-        return await super().update(
+        result = await super().update(
             query=query,
             data=data,
             exclude_unset=exclude_unset,
@@ -425,6 +445,47 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
             session=session,
             notify=notify,
         )
+
+        if ttl_jobs_provided:
+            for task_job in await self.__get_active_task_jobs(obj.id):
+                await self.job_service.set_ttl(job_id=task_job.id, ttl=ttl_jobs, minions=[])
+
+        return result
+
+    async def __get_active_task_jobs(self, task_id: PyObjectId) -> list[EmptyModel]:
+        return await self.job_service.get_list(
+            query={
+                'source.type': 'task',
+                'source.id': str(task_id),
+                'status': {'$nin': [JobStatus.finished, JobStatus.launch_error]},
+            },
+            limit=0,
+            skip=0,
+            projection_model=EmptyModel,
+        )
+
+    async def run(self, query: dict[str, Any] | PyObjectId, force: bool = False) -> None:
+        task = await self.get(query=query, projection_model=TaskStatusOnlySchema)
+
+        if (task.status and task.status.type in [TaskStatus.created, TaskStatus.stopped]) or force:
+            await self.update(
+                query=task.id, data={'status': TaskStatus.running, 'status_data': {'reason': TaskRunReason.started}}
+            )
+
+    async def stop(self, query: dict[str, Any] | PyObjectId, reason: TaskStopReason = TaskStopReason.user) -> None:
+        task = await self.get(query=query, projection_model=TaskStatusOnlySchema)
+
+        if task.status and task.status.type in [TaskStatus.running, TaskStatus.wait_minions]:
+            for task_job in await self.__get_active_task_jobs(task.id):
+                await self.job_service.stop_job(task_job.id)
+
+            await self.task_minion_service.bulk_update(
+                query={'task_id': task.id, 'status': TaskMinionStatus.busy},
+                data={'status': TaskMinionStatus.pending},
+            )
+            await self.update(
+                query=task.id, data={'status': TaskStatus.stopping, 'status_data': {'reason': reason}}
+            )
 
     async def get_policies_for_collection(
         self, target_collection_id: PyObjectId
@@ -462,6 +523,7 @@ def get_task_service(
     task_minion_service: Annotated[TaskMinionService, Depends(get_task_minion_service)],
     collections_service: Annotated[CollectionService, Depends(get_collection_service)],
     minion_service: Annotated[MinionService, Depends(get_minion_service)],
+    job_service: Annotated[JobService, Depends(get_job_service)],
     pillar_service: Annotated[PillarService | None, Depends(get_pillar_service)] = None,
 ) -> TaskService:
     return TaskService(
@@ -472,5 +534,6 @@ def get_task_service(
         task_minion_service=task_minion_service,
         collections_service=collections_service,
         minion_service=minion_service,
+        job_service=job_service,
         pillar_service=pillar_service,
     )

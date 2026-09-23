@@ -70,6 +70,13 @@ class SaltEventsHandler:
         self.task_repository = get_task_repository(db=self.mongo_db)
         self.task_status_repository = get_task_status_repository(db=self.mongo_db)
         self.task_status_service = get_task_status_service(repo=self.task_status_repository)
+        self.job_service = get_job_service(
+            rdb=self.redis,
+            job_repository=self.job_repository,
+            task_template_service=self.task_template_service,
+            job_return_service=self.job_return_service,
+            master_service=self.master_service,
+        )
         self.task_service = get_task_service(
             repo=self.task_repository,
             rdb=self.redis,
@@ -78,13 +85,7 @@ class SaltEventsHandler:
             task_minion_service=self.task_minion_service,
             collections_service=self.collection_service,
             minion_service=self.minion_service,
-        )
-        self.job_service = get_job_service(
-            rdb=self.redis,
-            job_repository=self.job_repository,
-            task_template_service=self.task_template_service,
-            job_return_service=self.job_return_service,
-            master_service=self.master_service,
+            job_service=self.job_service,
         )
 
         self.broker = get_faststream_broker()

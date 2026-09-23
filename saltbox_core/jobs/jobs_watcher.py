@@ -51,6 +51,13 @@ class JobsWatcher:
 
         self.job_return_service = JobReturnService(repo=JobReturnRepository(database=db, rdb=redis), rdb=redis)
         self.task_minion_service = TaskMinionService(repo=TaskMinionRepository(db), rdb=redis)
+        self.job_service = JobService(
+            rdb=redis,
+            job_repository=JobRepository(db),
+            job_return_service=self.job_return_service,
+            task_template_service=task_template_service,
+            master_service=MasterService(repo=MasterRepository(db)),
+        )
         self.task_service = TaskService(
             repo=TaskRepository(db),
             rdb=redis,
@@ -59,13 +66,7 @@ class JobsWatcher:
             task_minion_service=self.task_minion_service,
             collections_service=CollectionService(repo=CollectionRepository(db)),
             minion_service=MinionService(repo=MinionRepository(db, extra_data_repository=extra_data_repository)),
-        )
-        self.job_service = JobService(
-            rdb=redis,
-            job_repository=JobRepository(db),
-            job_return_service=self.job_return_service,
-            task_template_service=task_template_service,
-            master_service=MasterService(repo=MasterRepository(db)),
+            job_service=self.job_service,
         )
 
     async def timeout_job_return(self, job_return: JobReturnForJobWatcherSchema) -> None:

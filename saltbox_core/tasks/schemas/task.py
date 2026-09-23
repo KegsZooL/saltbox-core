@@ -77,7 +77,8 @@ class TaskEditableFieldsMixin(BaseModel):
     retry_delay: int = Field(
         title='Retry delay', description='in seconds', ge=0, default=SETTINGS.tasks_defaults_retry_delay
     )
-    ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl, default=None)
+    ttl_jobs: int | None = Field(title='TTL of jobs created by this task', ge=0, le=SETTINGS.jobs_max_ttl, default=None)
+    ttl_task: int | None = Field(title='TTL of the task itself', ge=0, default=None)
 
     last_sync_dt: TimezoneAwareDatetime | None = Field(title='Last sync datetime', default=None)
 
@@ -94,6 +95,15 @@ class TaskStatusJoinedFieldsMixin(BaseModel):
     status: TaskStatusShort = Field(
         title='Status', default=TaskStatusShort(type=TaskStatus.created, created=utc_now(), modified=utc_now())
     )
+
+
+class TaskStatusDataJoinedFieldsMixin(BaseModel):
+    status_data: dict = Field(title='Status data', default_factory=dict)
+    status_dt: TimezoneAwareDatetime | None = Field(title='Status datetime', default=None)
+
+
+class TaskLastStartedJoinedFieldsMixin(BaseModel):
+    last_started_dt: TimezoneAwareDatetime | None = Field(title='Last started datetime', default=None)
 
 
 class TaskJobJoinedFieldsMixin[TaskJobJoinedSchema: BaseModel](BaseModel):
@@ -135,6 +145,8 @@ class TaskModel(
     TaskTemplateJoinedFieldsMixin,
     TaskTargetCollectionJoinedFieldsMixin,
     TaskStatusJoinedFieldsMixin,
+    TaskStatusDataJoinedFieldsMixin,
+    TaskLastStartedJoinedFieldsMixin,
     TaskAggregatedFieldsMixin,
     TaskEditableFieldsMixin,
     TaskReadOnlyFieldsMixin,
@@ -150,6 +162,7 @@ class TaskForLifespanModel(
     CreatedModifiedMixin,
     TaskTemplateJoinedFieldsMixin,
     TaskStatusJoinedFieldsMixin,
+    TaskLastStartedJoinedFieldsMixin,
     TaskEditableFieldsMixin,
     TaskReadOnlyFieldsMixin,
     IDMixin,
@@ -216,7 +229,8 @@ class TaskCreateRequestSchema(BaseModel):
     max_retries: int | None = Field(title='Max retries', ge=0, default=None)
     retry_delay: int | None = Field(title='Retry delay', description='in seconds', ge=0, default=None)
 
-    ttl: int | None = Field(ge=0, le=SETTINGS.jobs_max_ttl, default=None)
+    ttl_jobs: int | None = Field(title='TTL of jobs created by this task', ge=0, le=SETTINGS.jobs_max_ttl, default=None)
+    ttl_task: int | None = Field(title='TTL of the task itself', ge=0, default=None)
     save_pillars_as_default: bool = Field(title='Whether to save pillars as default for template', default=False)
 
     @model_validator(mode='after')
@@ -258,6 +272,8 @@ class TaskListResponseSchema(
     TaskTemplateJoinedFieldsMixin,
     TaskTargetCollectionJoinedFieldsMixin,
     TaskStatusJoinedFieldsMixin,
+    TaskStatusDataJoinedFieldsMixin,
+    TaskLastStartedJoinedFieldsMixin,
     TaskAggregatedFieldsMixin,
     TaskEditableFieldsMixin,
     TaskReadOnlyFieldsMixin,
@@ -270,6 +286,23 @@ class TaskListBody(SkipLimitParams, QueryParams, SortParams):
     model_config = ConfigDict(extra='ignore')
 
 
+class TaskSafeUpdateSchema(BaseModel):
+    description: str | None = Field(title='Description', default=None)
+    weight: int | None = Field(title='Weight', default=None)
+    requirements: list[TaskRequirement] | None = Field(title='Requirements', default=None)
+
+    batch_size: int | None = Field(title='Batch size', ge=0, default=None)
+    max_jobs_count_at_same_time: int | None = Field(title='Max jobs count at some time', ge=1, default=None)
+
+    max_retries: int | None = Field(title='Max retries', ge=0, default=None)
+    retry_delay: int | None = Field(title='Retry delay', description='in seconds', ge=0, default=None)
+
+    ttl_jobs: int | None = Field(title='TTL of jobs created by this task', ge=0, le=SETTINGS.jobs_max_ttl, default=None)
+    ttl_task: int | None = Field(title='TTL of the task itself', ge=0, default=None)
+
+    model_config = ConfigDict(extra='ignore')
+
+
 # OPA
 
 
@@ -278,3 +311,4 @@ class TasksActions(StrEnum):
     READ = 'read'
     LIST = 'list'
     RUN = 'run'
+    UPDATE = 'update'

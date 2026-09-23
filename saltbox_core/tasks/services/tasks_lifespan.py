@@ -21,12 +21,12 @@ from saltbox_core.tasks.schemas.tasks_minion import (
     TaskMinionStatus,
     TaskMinionTgtOnlySchema,
 )
-from saltbox_core.tasks.schemas.tasks_status import TaskStatus
+from saltbox_core.tasks.schemas.tasks_status import TaskRunReason, TaskStatus, TaskStopReason
 from saltbox_core.tasks.services.task import TaskService, get_task_service
 from saltbox_core.tasks.services.tasks_minion import TaskMinionService, get_task_minion_service
 from saltbox_core.utilities.jid import JID
 from saltbox_sdk.db.mongo.config import get_mongo_db
-from saltbox_sdk.db.mongo.schemas_base import EmptyModel, PyObjectId
+from saltbox_sdk.db.mongo.schemas_base import PyObjectId
 from saltbox_sdk.db.redis.config import get_redis
 from saltbox_sdk.db.schemas_base import Source
 from saltbox_sdk.utilities.helpers import utc_now
@@ -90,40 +90,6 @@ class TaskLifespanService:
 
         return self.__task
 
-    async def run(self, force: bool = False) -> None:
-        task = await self.get_task()
-
-        if (task.status and task.status.type in [TaskStatus.created, TaskStatus.stopped]) or force:
-            await self.update_task(status=TaskStatus.running)
-
-    async def __stop_jobs(self) -> None:
-        task = await self.get_task()
-
-        task_jobs = await self.job_service.get_list(
-            query={
-                'source.type': 'task',
-                'source.id': str(task.id),
-                'status': {'$nin': [JobStatus.finished, JobStatus.launch_error]},
-            },
-            limit=0,
-            skip=0,
-            projection_model=EmptyModel,
-        )
-
-        for task_job in task_jobs:
-            await self.job_service.stop_job(task_job.id)
-
-    async def stop(self) -> None:
-        task = await self.get_task()
-
-        if task.status and task.status.type in [TaskStatus.running, TaskStatus.wait_minions]:
-            await self.__stop_jobs()
-            await self.task_minion_service.bulk_update(
-                query={'task_id': task.id, 'status': TaskMinionStatus.busy},
-                data={'status': TaskMinionStatus.pending},
-            )
-            await self.update_task(status=TaskStatus.stopping)
-
     async def restart_on_minions(self, minions_ids: list[PyObjectId]) -> None:
         task = await self.get_task()
 
@@ -133,7 +99,7 @@ class TaskLifespanService:
                 data={'status': TaskMinionStatus.pending, 'check_unactive_last_job_dt': None},
             )
 
-            await self.update_task(status=TaskStatus.running)
+            await self.update_task(status=TaskStatus.running, status_data={'reason': TaskRunReason.resumed})
 
     async def _batch_size(self, salt_master: str) -> int:
         # TODO: Need algorithm to get batch size
@@ -389,7 +355,7 @@ class TaskLifespanService:
         if not taken_minions:
             return 0
 
-        ttl: int | None = task.ttl
+        ttl: int | None = task.ttl_jobs
 
         if ttl is None and task.task_template and task.task_template.defaults:
             ttl = task.task_template.defaults.ttl
@@ -480,9 +446,10 @@ class TaskLifespanService:
                 }
             )
         ):
-            await self.update_task(
-                status=TaskStatus.wait_minions if task.task_type == TaskType.policy else TaskStatus.finished
-            )
+            if task.task_type == TaskType.policy:
+                await self.update_task(status=TaskStatus.wait_minions)
+            else:
+                await self.update_task(status=TaskStatus.finished, status_data={'reason': TaskStopReason.completed})
         else:
             if utc_now() - task.modified > self.__timedelta_to_sync_task():
                 await self.sync_jobs()
@@ -506,7 +473,7 @@ class TaskLifespanService:
 
             return
 
-        await self.update_task(status=TaskStatus.stopped)
+        await self.update_task(status=TaskStatus.stopped, status_data=task.status.data)
 
     async def handle_wait_minion_status(self) -> None:
         task = await self.get_task()
@@ -514,20 +481,29 @@ class TaskLifespanService:
         if task.status and task.status.type != TaskStatus.wait_minions:
             return
 
+        resumed_status_data = {'reason': TaskRunReason.resumed}
+
         if task.task_type == TaskType.policy:
             if await self.task_service.fill_task_minions(
                 task_id=task.id, target_collection_id=task.target_collection_id, target_query=task.target_query
             ):
-                await self.update_task(status=TaskStatus.running)
+                await self.update_task(status=TaskStatus.running, status_data=resumed_status_data)
             else:
                 await self.check_policy_requirements_task_minions()
 
                 if await self.task_minion_service.exists(
                     query={'task_id': task.id, 'status': TaskMinionStatus.pending}
                 ):
-                    await self.update_task(status=TaskStatus.running)
+                    await self.update_task(status=TaskStatus.running, status_data=resumed_status_data)
         else:
-            await self.update_task(status=TaskStatus.running)
+            await self.update_task(status=TaskStatus.running, status_data=resumed_status_data)
+
+    @staticmethod
+    def __is_ttl_task_expired(task: TaskForLifespanModel) -> bool:
+        if task.ttl_task is None or task.last_started_dt is None:
+            return False
+
+        return utc_now() >= task.last_started_dt + timedelta(seconds=task.ttl_task)
 
     async def process(self) -> None:
         task = await self.get_task()
@@ -536,6 +512,10 @@ class TaskLifespanService:
             return
 
         if task.status and task.status.type not in [TaskStatus.running, TaskStatus.stopping, TaskStatus.wait_minions]:
+            return
+
+        if task.status.type != TaskStatus.stopping and self.__is_ttl_task_expired(task):
+            await self.task_service.stop(query=task.id, reason=TaskStopReason.timeout)
             return
 
         handler = {

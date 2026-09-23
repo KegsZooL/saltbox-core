@@ -15,6 +15,7 @@ from saltbox_core.tasks.schemas.task import (
     TaskListResponseSchema,
     TaskModel,
     TasksActions,
+    TaskSafeUpdateSchema,
 )
 from saltbox_core.tasks.schemas.tasks_minion import (
     TaskMinionListBody,
@@ -113,6 +114,24 @@ async def task_retrieve(
     tid: PyObjectId,
     task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> TaskModel:
+    return await task_service.get(query=tid)
+
+
+@router.patch(
+    '/{tid}',
+    operation_id='task_update',
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.tasks.update',
+        action=TasksActions.UPDATE,
+    ).model_dump(by_alias=True),
+)
+async def task_update(
+    tid: PyObjectId,
+    item: TaskSafeUpdateSchema,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+) -> TaskModel:
+    await task_service.update(query=tid, data=item.model_dump(exclude_unset=True))
+
     return await task_service.get(query=tid)
 
 
@@ -235,11 +254,12 @@ async def task_return_data(
     ).model_dump(by_alias=True),
 )
 async def task_run(
-    task_lifespan_service: Annotated[TaskLifespanService, Depends(get_task_lifespan_service)],
+    tid: PyObjectId,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> TaskModel:
-    await task_lifespan_service.run()
+    await task_service.run(query=tid)
 
-    return await task_lifespan_service.get_full_task()
+    return await task_service.get(query=tid)
 
 
 @router.post(
@@ -251,11 +271,12 @@ async def task_run(
     ).model_dump(by_alias=True),
 )
 async def task_stop(
-    task_lifespan_service: Annotated[TaskLifespanService, Depends(get_task_lifespan_service)],
+    tid: PyObjectId,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> TaskModel:
-    await task_lifespan_service.stop()
+    await task_service.stop(query=tid)
 
-    return await task_lifespan_service.get_full_task()
+    return await task_service.get(query=tid)
 
 
 @router.post(

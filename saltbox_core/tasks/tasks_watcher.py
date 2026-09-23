@@ -129,6 +129,7 @@ class TasksWatcher:
             task_minion_service=task_minion_service,
             collections_service=collection_service,
             minion_service=minion_service,
+            job_service=job_service,
         )
 
         logger.info('Processing tasks...')

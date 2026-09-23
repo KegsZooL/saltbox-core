@@ -1,4 +1,10 @@
 from saltbox_core.config import logger
+from saltbox_core.jobs.repositories.job_repository import get_job_repository
+from saltbox_core.jobs.repositories.job_return_repository import get_job_return_repository
+from saltbox_core.jobs.services.job_return_service import get_job_return_service
+from saltbox_core.jobs.services.job_services import get_job_service
+from saltbox_core.masters.repositories.master_repository import get_master_repository
+from saltbox_core.masters.services.master_service import get_master_service
 from saltbox_core.minion_collections.repositories.collection import get_collection_repository
 from saltbox_core.minion_collections.repositories.extra_data import get_extra_data_repository
 from saltbox_core.minion_collections.repositories.extra_data_category import get_extra_data_category_repository
@@ -60,6 +66,9 @@ async def remove_local_sources_without_namespace() -> None:
     extra_data_category_repo = get_extra_data_category_repository(db)
     minion_extra_data_repo = get_extra_data_repository(db, extra_data_category_repo)
     minion_repo = get_minion_repository(db, minion_extra_data_repo)
+    master_repo = get_master_repository(db)
+    job_repo = get_job_repository(db)
+    job_return_repo = get_job_return_repository(db=db, rdb=rdb)
 
     sshfs_sync_service = await get_sshfs_sync()
     template_service = get_task_tpl_service(tpl_repo, pillar_repo)
@@ -77,6 +86,15 @@ async def remove_local_sources_without_namespace() -> None:
     )
 
     task_template_service = get_task_tpl_service(repo=tpl_repo, pillar_repo=pillar_repo)
+    master_service = get_master_service(repo=master_repo)
+    job_return_service = get_job_return_service(rdb=rdb, repo=job_return_repo)
+    job_service = get_job_service(
+        rdb=rdb,
+        job_repository=job_repo,
+        task_template_service=task_template_service,
+        job_return_service=job_return_service,
+        master_service=master_service,
+    )
 
     task_service = get_task_service(
         repo=task_repo,
@@ -86,6 +104,7 @@ async def remove_local_sources_without_namespace() -> None:
         task_minion_service=task_minion_service,
         collections_service=collections_service,
         minion_service=minion_service,
+        job_service=job_service,
         pillar_service=pillar_service,
     )
     tpl_source_service = get_tpl_source_service(
