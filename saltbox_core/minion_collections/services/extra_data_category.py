@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -24,9 +25,33 @@ from saltbox_core.utilities.model_schema import (
 )
 from saltbox_sdk.db.mongo.repository_base import MongoUpdateOperator
 from saltbox_sdk.db.mongo.schemas_base import EmptyModel, PyObjectId
-from saltbox_sdk.event_bus.schemas import ExtraDataCategoryType, MinionExtraDataCategoryFieldType
+from saltbox_sdk.event_bus.schemas import (
+    ExtraDataCategoryType,
+    MinionExtraDataCategoryFieldType,
+    MinionExtraDataExtraFieldsPolicy,
+)
 from saltbox_sdk.exceptions import PermissionDeniedException, SaltBoxValidationException
 from saltbox_sdk.serivces.mongo_base_service import MongoBaseService
+
+
+def _clean_field_value(value: Any, field_types: list[MinionExtraDataCategoryFieldType]) -> tuple[bool, Any]:
+    for field_type in field_types:
+        if field_type == MinionExtraDataCategoryFieldType.DATETIME:
+            if isinstance(value, str):
+                try:
+                    return True, datetime.fromisoformat(value)
+                except ValueError:
+                    continue
+        elif field_type in (MinionExtraDataCategoryFieldType.INT, MinionExtraDataCategoryFieldType.FLOAT):
+            if isinstance(value, bool):
+                continue
+            if field_type == MinionExtraDataCategoryFieldType.FLOAT and isinstance(value, int):
+                return True, value
+
+        if isinstance(value, field_type.python_type):
+            return True, value
+
+    return False, None
 
 
 class ExtraDataCategoryService(
@@ -95,6 +120,38 @@ class ExtraDataCategoryService(
             raise PermissionDeniedException(msg)
 
         return category
+
+    @staticmethod
+    def clean_manual_data(category: ExtraDataCategoryModel, data: dict[str, Any]) -> dict[str, Any]:
+        fields = {field.name: field for field in category.fields}
+        cleaned: dict[str, Any] = {}
+        errors: list[str] = []
+
+        for key, value in data.items():
+            field = fields.get(key)
+
+            if field is None:
+                if category.extra_fields_policy == MinionExtraDataExtraFieldsPolicy.IGNORE:
+                    errors.append(f'`{key}`: unknown field')
+                else:
+                    cleaned[key] = value
+                continue
+
+            if not field.types:
+                cleaned[key] = value
+                continue
+
+            is_valid, cleaned_value = _clean_field_value(value, field.types)
+            if is_valid:
+                cleaned[key] = cleaned_value
+            else:
+                errors.append(f'`{key}`: expected {" | ".join(field.types)}')
+
+        if errors:
+            msg = f'Invalid extra data: {"; ".join(errors)}'
+            raise SaltBoxValidationException(msg)
+
+        return cleaned
 
     async def get_minion_filter_schema_for_category(self, category_id: PyObjectId) -> list[MinionFilterSchema]:
         category = await self.get(category_id)

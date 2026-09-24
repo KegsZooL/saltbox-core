@@ -216,10 +216,11 @@ async def extra_data_item_create(
     category_service: ExtraDataCategoryServiceDep,
     minion_service: MinionServiceDep,
 ) -> StaticExtraDataItemSchema:
-    await category_service.get_manual_static_category(item.category_source, item.category_name)
+    category = await category_service.get_manual_static_category(item.category_source, item.category_name)
+    data = category_service.clean_manual_data(category, item.data)
 
     created_item = await minion_service.add_static_extra_data_item(
-        item.minion_id, item.category_source, item.category_name, item.data
+        item.minion_id, item.category_source, item.category_name, data
     )
 
     return StaticExtraDataItemSchema.model_validate(created_item)
@@ -239,10 +240,11 @@ async def extra_data_item_update(
     category_service: ExtraDataCategoryServiceDep,
     minion_service: MinionServiceDep,
 ) -> StaticExtraDataItemSchema:
-    await category_service.get_manual_static_category(item.category_source, item.category_name)
+    category = await category_service.get_manual_static_category(item.category_source, item.category_name)
+    data = category_service.clean_manual_data(category, item.data)
 
     updated_item = await minion_service.update_static_extra_data_item(
-        item.minion_id, item.category_source, item.category_name, item_id, item.data
+        item.minion_id, item.category_source, item.category_name, item_id, data
     )
 
     return StaticExtraDataItemSchema.model_validate(updated_item)
