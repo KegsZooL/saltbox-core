@@ -1,4 +1,4 @@
-import re
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, ClassVar
 
 import pymongo
@@ -15,6 +15,7 @@ from saltbox_core.minion_collections.repositories.extra_data_category import (
     get_extra_data_category_repository,
 )
 from saltbox_core.minion_collections.schemas.extra_data import ExtraDataModel
+from saltbox_sdk.db.mongo.aggregations import AnySearchAggregationStage
 from saltbox_sdk.db.mongo.config import get_mongo
 from saltbox_sdk.db.mongo.repository_base import BaseMongoRepository
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
@@ -130,8 +131,6 @@ class ExtraDataRepository(BaseMongoRepository[ExtraDataModel]):
         group_by_fields: list[str],
         search_str: str | None = None,
         escape_search_str: bool = True,
-        limit: int = 0,
-        skip: int = 0,
         sort: dict[str, SortOrder] | None = None,
     ) -> list[dict[str, Any]]:
         group_key: dict[str, Any] = {field: {'$ifNull': [f'$data.{field}', None]} for field in group_by_fields}
@@ -164,31 +163,12 @@ class ExtraDataRepository(BaseMongoRepository[ExtraDataModel]):
         ]
 
         if search_str:
-            kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
-            regex = re.escape(search_str) if escape_search_str else search_str
-            search_match = {'$regexMatch': {'input': kv_value, 'regex': regex, 'options': 'i'}}
-            pipeline.append(
-                {
-                    '$match': {
-                        '$expr': {
-                            '$anyElementTrue': {
-                                '$map': {'input': {'$objectToArray': '$$ROOT'}, 'as': 'kv', 'in': search_match}
-                            }
-                        }
-                    }
-                }
-            )
+            pipeline.append(AnySearchAggregationStage(search=search_str, escape=escape_search_str).render_stage())
 
         full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
         full_sort.update({field: SortOrder.ASC for field in group_by_fields if field not in full_sort})
 
-        data_branch: list[dict[str, Any]] = [{'$sort': full_sort}]
-        if skip:
-            data_branch.append({'$skip': skip})
-        if limit:
-            data_branch.append({'$limit': limit})
-
-        pipeline.append({'$facet': {'total': [{'$count': 'total'}], 'data': data_branch}})
+        pipeline.append({'$sort': full_sort})
 
         return pipeline
 
@@ -213,16 +193,35 @@ class ExtraDataRepository(BaseMongoRepository[ExtraDataModel]):
             group_by_fields=group_by_fields,
             search_str=search_str,
             escape_search_str=escape_search_str,
-            limit=limit,
-            skip=skip,
             sort=sort,
         )
-        cursor = await self.collection.aggregate(pipeline=pipeline, session=session, allowDiskUse=True)
-        facet_result = await cursor.to_list()
-        facet = facet_result[0] if facet_result else {'total': [], 'data': []}
-        total = facet['total'][0]['total'] if facet['total'] else 0
 
-        return total, facet['data']
+        return await self.aggregate_paginated(pipeline, skip, limit, session=session)
+
+    async def iter_grouped(
+        self,
+        *,
+        minion_ids: list[PyObjectId],
+        category_source: str,
+        category_name: str,
+        group_by_fields: list[str],
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        sort: dict[str, SortOrder] | None = None,
+        session: MongoAsyncClientSession | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        pipeline = self.build_grouped_pipeline(
+            minion_ids=minion_ids,
+            category_source=category_source,
+            category_name=category_name,
+            group_by_fields=group_by_fields,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            sort=sort,
+        )
+
+        async for row in self.aggregate_iter(pipeline, session=session):
+            yield row
 
 
 def get_extra_data_repository(

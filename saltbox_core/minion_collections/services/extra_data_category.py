@@ -108,6 +108,14 @@ class ExtraDataCategoryService(
 
         return await super().delete(query, session=session)
 
+    async def get_by_id_or_source_and_name(
+        self, category_id: PyObjectId | None, source: str | None, name: str | None
+    ) -> ExtraDataCategoryModel:
+        if category_id is not None:
+            return await self.get(query=category_id)
+
+        return await self.get(query={'source': source, 'name': name})
+
     async def get_manual_static_category(self, source: str, name: str) -> ExtraDataCategoryModel:
         category = await self.get(query={'source': source, 'name': name})
 

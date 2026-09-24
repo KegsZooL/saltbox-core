@@ -67,6 +67,7 @@ class ExtraDataActions(StrEnum):
     UPDATE = 'update'
     DELETE = 'delete'
     LIST = 'list'
+    EXPORT = 'export'
 
 
 class StaticExtraDataItemRequestSchema(BaseModel):

@@ -1,4 +1,5 @@
 import re
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, ClassVar, cast, overload
 
@@ -16,6 +17,7 @@ from saltbox_sdk.db.mongo.aggregations import (
     AddFieldsAggregationStage,
     AggregatedField,
     AggregationsStore,
+    AnySearchAggregationStage,
     GroupAggregationStage,
     LookupAggregationStage,
     ProjectAggregationStage,
@@ -250,8 +252,6 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
         escape_search_str: bool = True,
         group_by_fields: list[str] | None = None,
         field_names: list[str] | None = None,
-        limit: int = 0,
-        skip: int = 0,
         sort: dict[str, SortOrder] | None = None,
     ) -> list[dict[str, Any]]:
         pipeline: list[dict[str, Any]] = []
@@ -376,32 +376,13 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
             )
 
         if search_str:
-            kv_value = {'$convert': {'input': '$$kv.v', 'to': 'string', 'onError': '', 'onNull': ''}}
-            regex = re.escape(search_str) if escape_search_str else search_str
-            search_match = {'$regexMatch': {'input': kv_value, 'regex': regex, 'options': 'i'}}
-            pipeline.append(
-                {
-                    '$match': {
-                        '$expr': {
-                            '$anyElementTrue': {
-                                '$map': {'input': {'$objectToArray': '$$ROOT'}, 'as': 'kv', 'in': search_match}
-                            }
-                        }
-                    }
-                }
-            )
+            pipeline.append(AnySearchAggregationStage(search=search_str, escape=escape_search_str).render_stage())
 
         full_sort = {'_source': SortOrder.ASC, '_name': SortOrder.ASC, **(sort or {})}
         tiebreaker_fields = group_by_fields or field_names or []
         full_sort.update({field: SortOrder.ASC for field in tiebreaker_fields if field not in full_sort})
 
-        data_branch: list[dict[str, Any]] = [{'$sort': full_sort}]
-        if skip:
-            data_branch.append({'$skip': skip})
-        if limit:
-            data_branch.append({'$limit': limit})
-
-        pipeline.append({'$facet': {'total': [{'$count': 'total'}], 'data': data_branch}})
+        pipeline.append({'$sort': full_sort})
 
         return pipeline
 
@@ -430,16 +411,39 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
             escape_search_str=escape_search_str,
             group_by_fields=group_by_fields,
             field_names=field_names,
-            limit=limit,
-            skip=skip,
             sort=sort,
         )
-        cursor = await self.collection.aggregate(pipeline=pipeline, session=session, allowDiskUse=True)
-        facet_result = await cursor.to_list()
-        facet = facet_result[0] if facet_result else {'total': [], 'data': []}
-        total = facet['total'][0]['total'] if facet['total'] else 0
 
-        return total, facet['data']
+        return await self.aggregate_paginated(pipeline, skip, limit, session=session)
+
+    async def iter_extra_data(
+        self,
+        *,
+        query: dict[str, Any] | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        group_by_fields: list[str] | None = None,
+        field_names: list[str] | None = None,
+        sort: dict[str, SortOrder] | None = None,
+        session: MongoAsyncClientSession | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        pipeline = self.build_extra_data_pipeline(
+            query=query,
+            category_source=category_source,
+            category_name=category_name,
+            category_type=category_type,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            group_by_fields=group_by_fields,
+            field_names=field_names,
+            sort=sort,
+        )
+
+        async for row in self.aggregate_iter(pipeline, session=session):
+            yield row
 
     class Meta:
         collection_name = 'minions'

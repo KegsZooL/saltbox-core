@@ -1,4 +1,5 @@
 import csv
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Annotated, Any, NoReturn, overload
 
@@ -8,6 +9,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession as MongoAsync
 
 from saltbox_core.config import logger
 from saltbox_core.minion_collections.repositories.minion import MinionRepository, get_minion_repository
+from saltbox_core.minion_collections.schemas.collection import CollectionModel
 from saltbox_core.minion_collections.schemas.extra_data import (
     CollectionExtraDataListItemSchema,
     ExtraDataListItemSchema,
@@ -62,6 +64,15 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
             return await self.get(query=query, projection_model=projection_model)
         else:
             return await self.get(query=query)
+
+    async def get_in_collection(
+        self, minion_id: PyObjectId, collection: CollectionModel | None, *, projection_model: type[ProjectionModel]
+    ) -> ProjectionModel:
+        query: dict[str, Any] = {'_id': minion_id}
+        if collection is not None and collection.full_query:
+            query = {'$and': [query, collection.full_query]}
+
+        return await self.get(query=query, projection_model=projection_model)
 
     async def get_ids_by_query(self, query: dict[str, Any]) -> list[MinionIDs]:
         return await self.repo.get_list(query, skip=0, limit=0, projection_model=MinionIDs)
@@ -223,6 +234,71 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         )
 
         return PaginatedResponse[CollectionExtraDataListItemSchema](total=total, data=data)
+
+    async def iter_extra_data_list(
+        self,
+        *,
+        query: dict[str, Any] | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
+        field_names: list[str] | None = None,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        sort: dict[str, SortOrder] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        query = await self.repo.__prepare_query__(query)
+
+        async for row in self.repo.iter_extra_data(
+            query=query,
+            category_source=category_source,
+            category_name=category_name,
+            category_type=category_type,
+            field_names=field_names,
+            search_str=search_str,
+            escape_search_str=escape_search_str,
+            sort=sort,
+        ):
+            yield row
+
+    async def iter_grouped_extra_data_list(
+        self,
+        *,
+        group_by_fields: list[str],
+        query: dict[str, Any] | None = None,
+        category_source: str,
+        category_name: str,
+        category_type: ExtraDataCategoryType,
+        search_str: str | None = None,
+        escape_search_str: bool = True,
+        sort: dict[str, SortOrder] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        query = await self.repo.__prepare_query__(query)
+
+        if category_type == ExtraDataCategoryType.AGGREGATED:
+            rows = self.repo.extra_data_repository.iter_grouped(
+                minion_ids=await self.repo.get_ids(query),
+                category_source=category_source,
+                category_name=category_name,
+                group_by_fields=group_by_fields,
+                search_str=search_str,
+                escape_search_str=escape_search_str,
+                sort=sort,
+            )
+        else:
+            rows = self.repo.iter_extra_data(
+                query=query,
+                category_source=category_source,
+                category_name=category_name,
+                category_type=category_type,
+                group_by_fields=group_by_fields,
+                search_str=search_str,
+                escape_search_str=escape_search_str,
+                sort=sort,
+            )
+
+        async for row in rows:
+            yield row
 
     @staticmethod
     def _new_static_extra_data_item(data: dict[str, Any], *, is_system: bool, updated_at: datetime) -> dict[str, Any]:

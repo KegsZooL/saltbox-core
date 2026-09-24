@@ -25,3 +25,11 @@ def test_ungrouped_pipeline_does_not_count_minions():
     group_stages = [stage['$group'] for stage in _build(None) if '$group' in stage]
 
     assert group_stages == [{'_id': '$$ROOT'}]
+
+
+@pytest.mark.parametrize('group_by_fields', [None, [], ['text']])
+def test_pipeline_ends_with_sort_and_has_no_facet(group_by_fields):
+    pipeline = _build(group_by_fields)
+
+    assert '$sort' in pipeline[-1]
+    assert not any('$facet' in stage for stage in pipeline)

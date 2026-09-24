@@ -1,6 +1,7 @@
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Response, status
+from fastapi.responses import StreamingResponse
 
 from saltbox_core.minion_collections.schemas.extra_data import (
     CollectionExtraDataListItemSchema,
@@ -11,6 +12,7 @@ from saltbox_core.minion_collections.schemas.extra_data import (
 )
 from saltbox_core.minion_collections.schemas.extra_data_category import (
     CollectionExtraDataListBody,
+    CollectionExtraDataQueryBody,
     ExtraDataCategoryActions,
     ExtraDataCategoryCreateRequestSchema,
     ExtraDataCategoryCreateSchema,
@@ -18,6 +20,7 @@ from saltbox_core.minion_collections.schemas.extra_data_category import (
     ExtraDataCategoryModel,
     ExtraDataCategoryUpdateSchema,
     ExtraDataListBody,
+    MinionExtraDataQueryBody,
 )
 from saltbox_core.minion_collections.schemas.minion import MinionTgtOnlySchema
 from saltbox_core.minion_collections.services.collection import CollectionService, get_collection_service
@@ -29,6 +32,7 @@ from saltbox_core.minion_collections.services.minion import MinionService, get_m
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId
 from saltbox_sdk.db.schemas_base import PaginatedResponse
 from saltbox_sdk.discovery_client.schemas import GatewayEndpointConfig
+from saltbox_sdk.fastapi_utils.csv_export import csv_response
 
 router = APIRouter(prefix='/extra-data', tags=['Extra Data'])
 
@@ -139,18 +143,11 @@ async def extra_data_items_by_minion(
     category_service: ExtraDataCategoryServiceDep,
     collection_service: CollectionServiceDep,
 ) -> PaginatedResponse[ExtraDataListItemSchema]:
-    minion_query: dict[str, Any] = {'_id': body.minion_id}
-    if body.collection_slug is not None:
-        collection = await collection_service.get_by_slug(body.collection_slug)
-        if collection.full_query:
-            minion_query = {'$and': [minion_query, collection.full_query]}
-
-    minion = await minion_service.get(query=minion_query, projection_model=MinionTgtOnlySchema)
-
-    if body.category_id is not None:
-        category = await category_service.get(query=body.category_id)
-    else:
-        category = await category_service.get(query={'source': body.category_source, 'name': body.category_name})
+    collection = await collection_service.get_by_slug(body.collection_slug) if body.collection_slug else None
+    minion = await minion_service.get_in_collection(body.minion_id, collection, projection_model=MinionTgtOnlySchema)
+    category = await category_service.get_by_id_or_source_and_name(
+        body.category_id, body.category_source, body.category_name
+    )
 
     return await minion_service.get_paginated_extra_data_list(
         query={'minion_id': minion.minion_id, 'master': minion.master},
@@ -180,15 +177,10 @@ async def extra_data_items_by_collection(
     category_service: ExtraDataCategoryServiceDep,
     collection_service: CollectionServiceDep,
 ) -> PaginatedResponse[CollectionExtraDataListItemSchema]:
-    if body.collection_id is not None:
-        collection = await collection_service.get(query=body.collection_id)
-    else:
-        collection = await collection_service.get(query={'slug': body.collection_slug})
-
-    if body.category_id is not None:
-        category = await category_service.get(query=body.category_id)
-    else:
-        category = await category_service.get(query={'source': body.category_source, 'name': body.category_name})
+    collection = await collection_service.get_by_id_or_slug(body.collection_id, body.collection_slug)
+    category = await category_service.get_by_id_or_source_and_name(
+        body.category_id, body.category_source, body.category_name
+    )
 
     return await minion_service.get_paginated_grouped_extra_data_list(
         group_by_fields=category.category_fields,
@@ -201,6 +193,78 @@ async def extra_data_items_by_collection(
         skip=body.skip,
         sort=body.sort,
     )
+
+
+@router.post(
+    '/items/by-minion/export',
+    operation_id='extra_data_items_by_minion_export',
+    response_class=StreamingResponse,
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.extra_data.items.by_minion',
+        action=ExtraDataActions.EXPORT,
+        cache_ttl=0,
+    ).model_dump(by_alias=True),
+)
+async def extra_data_items_by_minion_export(
+    body: Annotated[MinionExtraDataQueryBody, Body()],
+    minion_service: MinionServiceDep,
+    category_service: ExtraDataCategoryServiceDep,
+    collection_service: CollectionServiceDep,
+) -> StreamingResponse:
+    collection = await collection_service.get_by_slug(body.collection_slug) if body.collection_slug else None
+    minion = await minion_service.get_in_collection(body.minion_id, collection, projection_model=MinionTgtOnlySchema)
+    category = await category_service.get_by_id_or_source_and_name(
+        body.category_id, body.category_source, body.category_name
+    )
+    field_names = [field.name for field in category.fields]
+
+    rows = minion_service.iter_extra_data_list(
+        query={'minion_id': minion.minion_id, 'master': minion.master},
+        category_source=category.source,
+        category_name=category.name,
+        category_type=category.type,
+        field_names=field_names,
+        search_str=body.search,
+        sort=body.sort,
+    )
+    columns = [(name, name) for name in field_names] + [('updated_at', 'updated_at')]
+
+    return csv_response(columns, rows, ['extra_data', category.source, category.name, minion.minion_id])
+
+
+@router.post(
+    '/items/by-collection/export',
+    operation_id='extra_data_items_by_collection_export',
+    response_class=StreamingResponse,
+    openapi_extra=GatewayEndpointConfig(
+        policy='core.extra_data.items.by_collection',
+        action=ExtraDataActions.EXPORT,
+        cache_ttl=0,
+    ).model_dump(by_alias=True),
+)
+async def extra_data_items_by_collection_export(
+    body: Annotated[CollectionExtraDataQueryBody, Body()],
+    minion_service: MinionServiceDep,
+    category_service: ExtraDataCategoryServiceDep,
+    collection_service: CollectionServiceDep,
+) -> StreamingResponse:
+    collection = await collection_service.get_by_id_or_slug(body.collection_id, body.collection_slug)
+    category = await category_service.get_by_id_or_source_and_name(
+        body.category_id, body.category_source, body.category_name
+    )
+
+    rows = minion_service.iter_grouped_extra_data_list(
+        group_by_fields=category.category_fields,
+        query=collection.full_query,
+        category_source=category.source,
+        category_name=category.name,
+        category_type=category.type,
+        search_str=body.search,
+        sort=body.sort,
+    )
+    columns = [(name, name) for name in category.category_fields] + [('minions_count', '_minions_count')]
+
+    return csv_response(columns, rows, ['extra_data', category.source, category.name, collection.slug or ''])
 
 
 @router.post(

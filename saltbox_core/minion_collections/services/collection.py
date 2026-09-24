@@ -57,6 +57,12 @@ class CollectionService(
             return await self.repo.get(query={'slug': slug}, projection_model=projection_model, session=session)
         return await self.repo.get(query={'slug': slug}, session=session)
 
+    async def get_by_id_or_slug(self, collection_id: PyObjectId | None, slug: str | None) -> CollectionModel:
+        if collection_id is not None:
+            return await self.get(query=collection_id)
+
+        return await self.get(query={'slug': slug})
+
     async def update_by_slug(
         self,
         slug: str,

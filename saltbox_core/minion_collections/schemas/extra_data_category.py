@@ -74,7 +74,7 @@ class ExtraDataCategoryListBody(SkipLimitParams, QueryParams, SortParams):
     model_config = ConfigDict(extra='ignore')
 
 
-class ExtraDataListBaseBody(SkipLimitParams, SortParams):
+class ExtraDataQueryBaseBody(SortParams):
     category_id: PyObjectId | None = Field(title='Category ID', default=None)
     category_source: str | None = Field(title='Namespace', default=None)
     category_name: str | None = Field(title='Name', default=None)
@@ -83,7 +83,7 @@ class ExtraDataListBaseBody(SkipLimitParams, SortParams):
     model_config = ConfigDict(extra='ignore')
 
     @model_validator(mode='after')
-    def validate_category(self) -> 'ExtraDataListBaseBody':
+    def validate_category(self) -> 'ExtraDataQueryBaseBody':
         if self.category_id is not None:
             if self.category_source is not None or self.category_name is not None:
                 msg = 'Only one of `category_id` or `category_source` + `category_name` can be set'
@@ -95,17 +95,17 @@ class ExtraDataListBaseBody(SkipLimitParams, SortParams):
         return self
 
 
-class ExtraDataListBody(ExtraDataListBaseBody):
+class MinionExtraDataQueryBody(ExtraDataQueryBaseBody):
     minion_id: PyObjectId = Field(title='Minion Id')
     collection_slug: str | None = Field(title='Collection slug', default=None)
 
 
-class CollectionExtraDataListBody(ExtraDataListBaseBody):
+class CollectionExtraDataQueryBody(ExtraDataQueryBaseBody):
     collection_id: PyObjectId | None = Field(title='Collection ID', default=None)
     collection_slug: str | None = Field(title='Collection slug', default=None)
 
     @model_validator(mode='after')
-    def validate_collection(self) -> 'CollectionExtraDataListBody':
+    def validate_collection(self) -> 'CollectionExtraDataQueryBody':
         if self.collection_id is None and self.collection_slug is None:
             msg = 'One of `collection_id` or `collection_slug` must be set'
             raise SaltBoxValidationException(msg)
@@ -115,3 +115,9 @@ class CollectionExtraDataListBody(ExtraDataListBaseBody):
             raise SaltBoxValidationException(msg)
 
         return self
+
+
+class ExtraDataListBody(SkipLimitParams, MinionExtraDataQueryBody): ...
+
+
+class CollectionExtraDataListBody(SkipLimitParams, CollectionExtraDataQueryBody): ...
