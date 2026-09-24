@@ -48,18 +48,10 @@ OctMode = Annotated[int, BeforeValidator(oct_mode_validator)]
 class TreePermissions(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    user: Uid = Field(
-        default=-1,
-        description='Name of owner or UID to set, UID MUST be a number, -1 to not to change')
-    group: Gid = Field(
-        default=-1,
-        description='Name of group or GID to set, GID MUST be a number, -1 to not to change')
-    dir_mode: OctMode | None = Field(
-        default=None,
-        description='Permissions mode for every file in a tree')
-    file_mode: OctMode | None = Field(
-        default=None,
-        description='Permissions mode for every file in a tree')
+    user: Uid = Field(default=-1, description='Name of owner or UID to set, UID MUST be a number, -1 to not to change')
+    group: Gid = Field(default=-1, description='Name of group or GID to set, GID MUST be a number, -1 to not to change')
+    dir_mode: OctMode | None = Field(default=None, description='Permissions mode for every file in a tree')
+    file_mode: OctMode | None = Field(default=None, description='Permissions mode for every file in a tree')
 
     @property
     def is_chown_required(self) -> bool:

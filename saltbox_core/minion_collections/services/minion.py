@@ -1,6 +1,6 @@
 import csv
 from datetime import UTC, datetime
-from typing import Annotated, Any, overload
+from typing import Annotated, Any, NoReturn, overload
 
 from anyio import Path
 from fastapi import Depends
@@ -25,8 +25,9 @@ from saltbox_core.minion_collections.services.pipeline_builder import MongoPipel
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
 from saltbox_sdk.db.schemas_base import PaginatedResponse
 from saltbox_sdk.event_bus.schemas import ExtraDataCategoryType
-from saltbox_sdk.exceptions import ObjectNotFoundException
+from saltbox_sdk.exceptions import ObjectNotFoundException, PermissionDeniedException
 from saltbox_sdk.serivces.mongo_base_service import MongoBaseService, ProjectionModel
+from saltbox_sdk.utilities.helpers import utc_now
 
 
 class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreateSchema, MinionUpdateSchema]):
@@ -222,6 +223,65 @@ class MinionService(MongoBaseService[MinionRepository, MinionModel, MinionCreate
         )
 
         return PaginatedResponse[CollectionExtraDataListItemSchema](total=total, data=data)
+
+    @staticmethod
+    def _new_static_extra_data_item(data: dict[str, Any], *, is_system: bool, updated_at: datetime) -> dict[str, Any]:
+        return {'_id': PyObjectId(), 'is_system': is_system, 'updated_at': updated_at, 'data': data}
+
+    async def _raise_for_unchanged_static_extra_data_item(
+        self, minion_id: PyObjectId, source: str, name: str, item_id: PyObjectId
+    ) -> NoReturn:
+        if await self.repo.get_static_extra_data_item(minion_id, source, name, item_id) is None:
+            raise ObjectNotFoundException(obj_type='extra_static_item', query={'_id': item_id})
+
+        msg = 'Extra data items collected automatically cannot be changed manually.'
+        raise PermissionDeniedException(msg)
+
+    async def add_static_extra_data_item(
+        self, minion_id: PyObjectId, source: str, name: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        item = self._new_static_extra_data_item(data, is_system=False, updated_at=utc_now())
+
+        result = await self.repo.push_static_extra_data_item(minion_id, source, name, item)
+        if result.matched_count == 0:
+            raise ObjectNotFoundException(obj_type='minion', query={'_id': minion_id})
+
+        return item
+
+    async def update_static_extra_data_item(
+        self, minion_id: PyObjectId, source: str, name: str, item_id: PyObjectId, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = await self.repo.set_manual_static_extra_data_item_data(minion_id, source, name, item_id, data)
+        if result.matched_count == 0:
+            await self._raise_for_unchanged_static_extra_data_item(minion_id, source, name, item_id)
+
+        item = await self.repo.get_static_extra_data_item(minion_id, source, name, item_id)
+        if item is None:
+            raise ObjectNotFoundException(obj_type='extra_static_item', query={'_id': item_id})
+
+        return item
+
+    async def delete_static_extra_data_item(
+        self, minion_id: PyObjectId, source: str, name: str, item_id: PyObjectId
+    ) -> None:
+        result = await self.repo.pull_manual_static_extra_data_item(minion_id, source, name, item_id)
+        if result.matched_count == 0:
+            await self._raise_for_unchanged_static_extra_data_item(minion_id, source, name, item_id)
+
+    async def remove_static_category_data(self, source: str, name: str) -> None:
+        await self.repo.unset_static_category_field(source, name)
+
+    async def replace_system_static_extra_data(
+        self, minion_id: PyObjectId, data_by_category: dict[tuple[str, str], list[dict[str, Any]]], updated_at: datetime
+    ) -> None:
+        items_by_category = {
+            category: [self._new_static_extra_data_item(data, is_system=True, updated_at=updated_at) for data in datas]
+            for category, datas in data_by_category.items()
+        }
+
+        result = await self.repo.replace_system_static_extra_data_items(minion_id, items_by_category)
+        if result.matched_count == 0:
+            raise ObjectNotFoundException(obj_type='minion', query={'_id': minion_id})
 
 
 def get_minion_service(

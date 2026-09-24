@@ -483,9 +483,7 @@ class TaskService(MongoBaseWithNotifyService[TaskRepository, TaskModel, TaskCrea
                 query={'task_id': task.id, 'status': TaskMinionStatus.busy},
                 data={'status': TaskMinionStatus.pending},
             )
-            await self.update(
-                query=task.id, data={'status': TaskStatus.stopping, 'status_data': {'reason': reason}}
-            )
+            await self.update(query=task.id, data={'status': TaskStatus.stopping, 'status_data': {'reason': reason}})
 
     async def get_policies_for_collection(
         self, target_collection_id: PyObjectId

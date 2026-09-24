@@ -8,6 +8,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession as MongoAsync
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.asynchronous.database import AsyncDatabase as MongoAsyncDatabase
 from pymongo.operations import _IndexKeyHint
+from pymongo.results import UpdateResult
 
 from saltbox_core.minion_collections.repositories.extra_data import ExtraDataRepository, get_extra_data_repository
 from saltbox_core.minion_collections.schemas.minion import MinionModel
@@ -24,6 +25,26 @@ from saltbox_sdk.db.mongo.config import get_mongo
 from saltbox_sdk.db.mongo.repository_base import BaseMongoRepository, ProjectionModel
 from saltbox_sdk.db.mongo.schemas_base import PyObjectId, SortOrder
 from saltbox_sdk.event_bus.schemas import ExtraDataCategoryType
+from saltbox_sdk.utilities.helpers import utc_now
+
+EXTRA_STATIC_DATA_AS_KV = {
+    '$map': {
+        'input': {'$objectToArray': {'$ifNull': ['$extra_static', {}]}},
+        'as': 'src',
+        'in': {
+            'k': '$$src.k',
+            'v': {
+                '$arrayToObject': {
+                    '$map': {
+                        'input': {'$objectToArray': '$$src.v'},
+                        'as': 'cat',
+                        'in': {'k': '$$cat.k', 'v': {'$map': {'input': '$$cat.v', 'as': 'it', 'in': '$$it.data'}}},
+                    }
+                }
+            },
+        },
+    }
+}
 
 
 class MinionRepository(BaseMongoRepository[MinionModel]):
@@ -61,7 +82,7 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
         name: str = field_match.group('name')
         sub_field: str = field_match.group('sub_field')
 
-        return {f'extra_static.{source}.{name}.{sub_field}': field_value}
+        return {f'extra_static.{source}.{name}.data.{sub_field}': field_value}
 
     async def extra_aggregated_query_override(
         self, field_name: str, field_match: re.Match, field_value: Any, full_raw_query: dict
@@ -119,6 +140,105 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
         docs = await self.collection.find(filter=query, projection={'_id': 1}, session=session).to_list()
         return [doc['_id'] for doc in docs]
 
+    async def get_static_extra_data_item(
+        self,
+        minion_id: PyObjectId,
+        source: str,
+        name: str,
+        item_id: PyObjectId,
+        *,
+        session: MongoAsyncClientSession | None = None,
+    ) -> dict[str, Any] | None:
+        field_path = f'extra_static.{source}.{name}'
+        doc = await self.collection.find_one(filter={'_id': minion_id}, projection={field_path: 1}, session=session)
+        items = ((doc or {}).get('extra_static') or {}).get(source, {}).get(name) or []
+
+        return next((item for item in items if item.get('_id') == item_id), None)
+
+    async def push_static_extra_data_item(
+        self,
+        minion_id: PyObjectId,
+        source: str,
+        name: str,
+        item: dict[str, Any],
+        *,
+        session: MongoAsyncClientSession | None = None,
+    ) -> UpdateResult:
+        return await self.collection.update_one(
+            filter={'_id': minion_id},
+            update={'$push': {f'extra_static.{source}.{name}': item}, '$set': {'modified': utc_now()}},
+            session=session,
+        )
+
+    async def set_manual_static_extra_data_item_data(
+        self,
+        minion_id: PyObjectId,
+        source: str,
+        name: str,
+        item_id: PyObjectId,
+        data: dict[str, Any],
+        *,
+        session: MongoAsyncClientSession | None = None,
+    ) -> UpdateResult:
+        field_path = f'extra_static.{source}.{name}'
+        manual_item = {'_id': item_id, 'is_system': False}
+        now = utc_now()
+
+        return await self.collection.update_one(
+            filter={'_id': minion_id, field_path: {'$elemMatch': manual_item}},
+            update={
+                '$set': {f'{field_path}.$[item].data': data, f'{field_path}.$[item].updated_at': now, 'modified': now}
+            },
+            array_filters=[{f'item.{key}': value for key, value in manual_item.items()}],
+            session=session,
+        )
+
+    async def pull_manual_static_extra_data_item(
+        self,
+        minion_id: PyObjectId,
+        source: str,
+        name: str,
+        item_id: PyObjectId,
+        *,
+        session: MongoAsyncClientSession | None = None,
+    ) -> UpdateResult:
+        field_path = f'extra_static.{source}.{name}'
+        manual_item = {'_id': item_id, 'is_system': False}
+
+        return await self.collection.update_one(
+            filter={'_id': minion_id, field_path: {'$elemMatch': manual_item}},
+            update={'$pull': {field_path: manual_item}, '$set': {'modified': utc_now()}},
+            session=session,
+        )
+
+    async def replace_system_static_extra_data_items(
+        self,
+        minion_id: PyObjectId,
+        items_by_category: dict[tuple[str, str], list[dict[str, Any]]],
+        *,
+        session: MongoAsyncClientSession | None = None,
+    ) -> UpdateResult:
+        fields: dict[str, Any] = {'modified': utc_now()}
+
+        for (source, name), items in items_by_category.items():
+            field_path = f'extra_static.{source}.{name}'
+            manual_items = {
+                '$filter': {'input': {'$ifNull': [f'${field_path}', []]}, 'cond': {'$eq': ['$$this.is_system', False]}}
+            }
+            fields[field_path] = {'$concatArrays': [manual_items, {'$literal': items}]}
+
+        return await self.collection.update_one(filter={'_id': minion_id}, update=[{'$set': fields}], session=session)
+
+    async def unset_static_category_field(
+        self, source: str, name: str, *, session: MongoAsyncClientSession | None = None
+    ) -> None:
+        field_path = f'extra_static.{source}.{name}'
+        await self.collection.update_many(
+            filter={field_path: {'$exists': True}},
+            update={'$unset': {field_path: ''}},
+            session=session,
+        )
+
     @staticmethod
     def build_extra_data_pipeline(
         *,
@@ -166,7 +286,18 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
             '$map': {
                 'input': '$$this.v',
                 'as': 'it',
-                'in': {'$mergeObjects': ['$$it', {'_source': '$$src_name', '_name': '$$this.k'}]},
+                'in': {
+                    '$mergeObjects': [
+                        '$$it.data',
+                        {
+                            '_id': {'$toString': '$$it._id'},
+                            'is_system': '$$it.is_system',
+                            'updated_at': '$$it.updated_at',
+                            '_source': '$$src_name',
+                            '_name': '$$this.k',
+                        },
+                    ]
+                },
             }
         }
         inner_reduce = {
@@ -186,12 +317,13 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
         }
 
         skip_lookup = category_type == ExtraDataCategoryType.STATIC
+        is_grouped = group_by_fields is not None
 
         if skip_lookup:
             pipeline.extend(
                 [
                     {'$addFields': {'_static_items': outer_reduce}},
-                    {'$project': {'_id': 1 if group_by_fields else 0, 'items': '$_static_items'}},
+                    {'$project': {'_id': 1 if is_grouped else 0, 'items': '$_static_items'}},
                     {'$unwind': '$items'},
                 ]
             )
@@ -211,7 +343,7 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
                     {'$addFields': {'_static_items': outer_reduce}},
                     {
                         '$project': {
-                            '_id': 1 if group_by_fields else 0,
+                            '_id': 1 if is_grouped else 0,
                             'items': {'$concatArrays': ['$_static_items', '$_aggregated_items']},
                         }
                     },
@@ -219,7 +351,7 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
                 ]
             )
 
-        if group_by_fields:
+        if group_by_fields is not None:
             group_key: dict[str, Any] = {field: {'$ifNull': [f'$items.{field}', None]} for field in group_by_fields}
             group_key['_source'] = '$items._source'
             group_key['_name'] = '$items._name'
@@ -389,7 +521,7 @@ class MinionRepository(BaseMongoRepository[MinionModel]):
                                         '$reduce': {
                                             'input': {
                                                 '$concatArrays': [
-                                                    {'$objectToArray': {'$ifNull': ['$extra_static', {}]}},
+                                                    EXTRA_STATIC_DATA_AS_KV,
                                                     {'$objectToArray': '$extra_aggregated'},
                                                 ]
                                             },

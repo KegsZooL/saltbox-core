@@ -1,9 +1,11 @@
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from saltbox_sdk.db.mongo.schemas_base import IDMixin, PyObjectId
 from saltbox_sdk.db.schemas_base import CreatedModifiedMixin
+from saltbox_sdk.utilities.helpers import Iso8601ZDatetime
 
 
 class ExtraDataForMinion(BaseModel):
@@ -57,3 +59,27 @@ class CollectionExtraDataListItemSchema(ExtraDataListItemSchema):
         validation_alias='_minions_count',
         serialization_alias='minions_count',
     )
+
+
+class ExtraDataActions(StrEnum):
+    CREATE = 'create'
+    READ = 'read'
+    UPDATE = 'update'
+    DELETE = 'delete'
+    LIST = 'list'
+
+
+class StaticExtraDataItemRequestSchema(BaseModel):
+    category_source: str = Field(title='Category source')
+    category_name: str = Field(title='Category name')
+    minion_id: PyObjectId = Field(title='Minion ID')
+    data: dict[str, Any] = Field(title='Data')
+
+
+class StaticExtraDataItemSchema(BaseModel):
+    id: PyObjectId = Field(alias='_id', title='ID')
+    is_system: bool = Field(title='Created by system')
+    updated_at: Iso8601ZDatetime = Field(title='Updated at')
+    data: dict[str, Any] = Field(title='Data')
+
+    model_config = ConfigDict(populate_by_name=True)

@@ -43,9 +43,7 @@ class AsyncMockCollection:
             if limit > 0:
                 cursor_results = cursor_results[:limit]
             if projection:
-                cursor_results = [
-                    {key: doc[key] for key in projection if key in doc} for doc in cursor_results
-                ]
+                cursor_results = [{key: doc[key] for key in projection if key in doc} for doc in cursor_results]
 
         mock_cursor = self.mocker.MagicMock()
         mock_cursor.to_list = self.mocker.AsyncMock(return_value=cursor_results)
@@ -54,7 +52,7 @@ class AsyncMockCollection:
     async def count_documents(self, filter, limit=0, session=None):
         return self.collection.count_documents(filter)
 
-    async def update_one(self, filter, update, upsert=False, session=None):
+    async def update_one(self, filter, update, upsert=False, array_filters=None, session=None):
         """Эмуляция метода update_one"""
         # Проверяем, если в фильтре есть _id
         if '_id' in filter:
@@ -66,12 +64,21 @@ class AsyncMockCollection:
                         self._inserted_docs[doc_id][key] = value
 
                 # Обновляем документ в mongomock
-                result = self.collection.update_one(filter, update, upsert=upsert)
-                return self.mocker.MagicMock(modified_count=result.modified_count)
+                result = self.collection.update_one(filter, update, upsert=upsert, array_filters=array_filters)
+                return self.mocker.MagicMock(modified_count=result.modified_count, matched_count=result.matched_count)
 
         # Если не нашли документ по _id, пробуем обновить через mongomock
-        result = self.collection.update_one(filter, update, upsert=upsert)
-        return self.mocker.MagicMock(modified_count=result.modified_count)
+        result = self.collection.update_one(filter, update, upsert=upsert, array_filters=array_filters)
+        return self.mocker.MagicMock(modified_count=result.modified_count, matched_count=result.matched_count)
+
+    async def update_many(self, filter, update, session=None):
+        """Эмуляция метода update_many"""
+        result = self.collection.update_many(filter, update)
+        return self.mocker.MagicMock(modified_count=result.modified_count, matched_count=result.matched_count)
+
+    async def find_one(self, filter=None, projection=None, session=None):
+        """Эмуляция метода find_one"""
+        return self.collection.find_one(filter=filter, projection=projection)
 
     # TODO @: check and fix this
     async def find_one_and_update(

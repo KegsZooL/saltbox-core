@@ -8,25 +8,14 @@ from saltbox_core.config import logger
 from saltbox_core.event_bus.redis.masters_bus import send_message_and_wait_response_to_master
 from saltbox_core.masters.schemas.master_schemas import MasterModel
 from saltbox_core.masters.services.master_service import MasterService, get_master_service
-from saltbox_core.minion_collections.schemas.extra_data import ExtraDataListItemSchema
-from saltbox_core.minion_collections.schemas.extra_data_category import (
-    ExtraDataCategoryListBody,
-    ExtraDataCategoryModel,
-    ExtraDataListBody,
-)
 from saltbox_core.minion_collections.schemas.minion import (
     MinionBulkDeleteBody,
     MinionDetailSchema,
     MinionListBody,
     MinionsActions,
     MinionShortSchema,
-    MinionTgtOnlySchema,
 )
 from saltbox_core.minion_collections.services.collection import CollectionService, get_collection_service
-from saltbox_core.minion_collections.services.extra_data_category import (
-    ExtraDataCategoryService,
-    get_extra_data_category_service,
-)
 from saltbox_core.minion_collections.services.minion import MinionService, get_minion_service
 from saltbox_core.tasks.schemas.tasks_minion import MinionPolicyGroupSchema
 from saltbox_core.tasks.services.tasks_minion import TaskMinionService, get_task_minion_service
@@ -248,47 +237,3 @@ async def minion_bulk_delete(
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post(
-    '/extra/category/list',
-    operation_id='minions_extra_category_list',
-)
-async def extra_category_list(
-    body: Annotated[ExtraDataCategoryListBody, Body()],
-    extra_data_category_service: Annotated[ExtraDataCategoryService, Depends(get_extra_data_category_service)],
-) -> PaginatedResponse[ExtraDataCategoryModel]:
-    return await extra_data_category_service.get_list_paginated(
-        query=body.query, limit=body.limit, skip=body.skip, projection_model=ExtraDataCategoryModel
-    )
-
-
-@router.post(
-    '/extra/data/list',
-    operation_id='minions_extra_data_list',
-)
-async def extra_data_list(
-    body: Annotated[ExtraDataListBody, Body()],
-    minion_service: Annotated[MinionService, Depends(get_minion_service)],
-    extra_data_category_service: Annotated[ExtraDataCategoryService, Depends(get_extra_data_category_service)],
-) -> PaginatedResponse[ExtraDataListItemSchema]:
-    minion = await minion_service.get(query=body.minion_id, projection_model=MinionTgtOnlySchema)
-
-    if body.category_id is not None:
-        category = await extra_data_category_service.get(query=body.category_id)
-    else:
-        category = await extra_data_category_service.get(
-            query={'source': body.category_source, 'name': body.category_name}
-        )
-
-    return await minion_service.get_paginated_extra_data_list(
-        query={'minion_id': minion.minion_id, 'master': minion.master},
-        category_source=category.source,
-        category_name=category.name,
-        category_type=category.type,
-        field_names=[field.name for field in category.fields],
-        search_str=body.search,
-        limit=body.limit,
-        skip=body.skip,
-        sort=body.sort,
-    )

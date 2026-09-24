@@ -76,10 +76,7 @@ async def startup_broker() -> AsyncBroker:
             broker.with_queues(queue_default, queue_salt, queue_notify)
             await broker.startup()
         except AMQPConnectionError as ex:
-            logger.warning(
-                f'RabbitMQ is unavailable during startup: {ex}. '
-                'The broker will reconnect automatically.'
-            )
+            logger.warning(f'RabbitMQ is unavailable during startup: {ex}. The broker will reconnect automatically.')
     return broker
 
 
@@ -88,10 +85,7 @@ async def shutdown_broker() -> AsyncBroker:
         try:
             await broker.shutdown()
         except AMQPConnectionError as ex:
-            logger.warning(
-                f'RabbitMQ is unavailable during startup: {ex}. '
-                'The broker will reconnect automatically.'
-            )
+            logger.warning(f'RabbitMQ is unavailable during startup: {ex}. The broker will reconnect automatically.')
     return broker
 
 

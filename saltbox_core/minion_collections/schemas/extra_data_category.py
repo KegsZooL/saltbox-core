@@ -1,3 +1,5 @@
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from saltbox_sdk.db.mongo.schemas_base import IDMixin, PyObjectId, QueryParams, SortParams
@@ -14,10 +16,12 @@ class ExtraDataCategoryReadOnlyFieldsMixin(BaseModel):
     source: str = Field(title='Source')
     name: str = Field(title='Name')
     type: ExtraDataCategoryType = Field(title='Type')
-    extra_fields_policy: MinionExtraDataExtraFieldsPolicy = Field(default=MinionExtraDataExtraFieldsPolicy.IGNORE)
+    is_system: bool = Field(default=False, title='Created by system')
+    is_manual_data_allowed: bool = Field(default=False, title='Manual data entries allowed')
 
 
 class ExtraDataCategoryEditableFieldsMixin(BaseModel):
+    extra_fields_policy: MinionExtraDataExtraFieldsPolicy = Field(default=MinionExtraDataExtraFieldsPolicy.IGNORE)
     fields: list[MinionExtraDataCategoryField] = Field(default_factory=list)
     minion_fields: list[str] = Field(default_factory=list)
 
@@ -46,6 +50,22 @@ class ExtraDataCategoryModel(
 
 
 # REST
+
+
+class ExtraDataCategoryActions(StrEnum):
+    CREATE = 'create'
+    READ = 'read'
+    UPDATE = 'update'
+    DELETE = 'delete'
+    LIST = 'list'
+
+
+class ExtraDataCategoryCreateRequestSchema(BaseModel):
+    name: str = Field(title='Name')
+    type: ExtraDataCategoryType = Field(title='Type')
+    extra_fields_policy: MinionExtraDataExtraFieldsPolicy = Field(default=MinionExtraDataExtraFieldsPolicy.IGNORE)
+    fields: list[MinionExtraDataCategoryField] = Field(default_factory=list)
+    minion_fields: list[str] = Field(default_factory=list)
 
 
 class ExtraDataCategoryListBody(SkipLimitParams, QueryParams, SortParams):
@@ -77,6 +97,7 @@ class ExtraDataListBaseBody(SkipLimitParams, SortParams):
 
 class ExtraDataListBody(ExtraDataListBaseBody):
     minion_id: PyObjectId = Field(title='Minion Id')
+    collection_slug: str | None = Field(title='Collection slug', default=None)
 
 
 class CollectionExtraDataListBody(ExtraDataListBaseBody):

@@ -40,6 +40,8 @@ async def extra_categories_sync(
                 'extra_fields_policy': category.extra_fields_policy,
                 'fields': [field.model_dump() for field in category.fields],
                 'minion_fields': category.minion_fields,
+                'is_system': True,
+                'is_manual_data_allowed': bool(category.is_manual_data_allowed),
             },
         )
 
@@ -67,7 +69,7 @@ async def add_extra_data(  # noqa: C901
     except ObjectNotFoundException:
         return None
 
-    static_items: dict[str, list[Any]] = {}
+    static_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
     updated_at = utc_now()
 
     for extra_data in message.data_list:
@@ -98,11 +100,8 @@ async def add_extra_data(  # noqa: C901
             category_data_items.append({'category_data': category_data_item, 'minion_data': minion_data_item})
 
         if category.type == ExtraDataCategoryType.STATIC:
-            static_items.setdefault(f'extra_static.{category.source}.{category.name}', []).extend(
-                [
-                    {**item['category_data'], **item['minion_data'], 'updated_at': updated_at}
-                    for item in category_data_items
-                ]
+            static_items.setdefault((category.source, category.name), []).extend(
+                [{**item['category_data'], **item['minion_data']} for item in category_data_items]
             )
         elif category.type == ExtraDataCategoryType.AGGREGATED:
             for extra_data_item in category_data_items:
@@ -137,7 +136,7 @@ async def add_extra_data(  # noqa: C901
 
     try:
         if static_items:
-            await minion_service.update(query=minion_id, data=static_items)
+            await minion_service.replace_system_static_extra_data(minion_id, static_items, updated_at)
     except ObjectNotFoundException:
         return None
 
