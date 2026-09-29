@@ -6,6 +6,15 @@ on:
 
 
 jobs:
+  export-pr-number:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.pull_request.number }}" > pr_number.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr-number
+          path: pr_number.txt
+
   ruff:
     runs-on: ubuntu-latest
     steps:
